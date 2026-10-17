@@ -9502,8 +9502,22 @@ task.spawn(function()
     local ExtrasTab = SettingsLib.CreateTab("Extras", 99)
 
     -- ── EMOTE SYNC ──
-    local syncItem = SettingsLib.AddItem(ExtrasTab, "Emote Sync", "Copia o emote do player mais próximo (<40 studs)")
+    local syncItem = SettingsLib.AddItem(ExtrasTab, "Emote Sync", "Nick = sincroniza com esse player | Vazio = mais próximo (<40 studs)")
     syncItem.LayoutOrder = 1
+
+    local nickBox = SettingsLib:Create("TextBox", {
+        Parent           = syncItem,
+        BackgroundColor3 = Color3.fromRGB(40, 40, 45),
+        Position         = UDim2.new(1, -185, 0.5, -12),
+        Size             = UDim2.new(0, 90, 0, 24),
+        Font             = Enum.Font.Gotham,
+        Text             = "",
+        PlaceholderText  = "nick (opcional)",
+        TextColor3       = Color3.new(1, 1, 1),
+        TextSize         = 10,
+        ClearTextOnFocus = false,
+    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
     local syncBtn = SettingsLib:Create("TextButton", {
         Parent            = syncItem,
         BackgroundColor3  = Color3.fromRGB(0, 180, 120),
@@ -9516,15 +9530,36 @@ task.spawn(function()
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
     syncBtn.MouseButton1Click:Connect(function()
-        local target = getNearestPlayer(40)
-        if not target then
-            getgenv().Notify({
-                Title   = "hyaprojmodified | Sync",
-                Content = "❌ Nenhum player próximo encontrado",
-                Duration = 3
-            })
-            return
+        local nick = nickBox.Text:gsub("%s", "")
+        local target = nil
+
+        if nick ~= "" then
+            for _, p in ipairs(game.Players:GetPlayers()) do
+                if p ~= game.Players.LocalPlayer and p.Name:lower():find(nick:lower(), 1, true) then
+                    target = p
+                    break
+                end
+            end
+            if not target then
+                getgenv().Notify({
+                    Title   = "hyaprojmodified | Sync",
+                    Content = "❌ Player '" .. nick .. "' não encontrado no servidor",
+                    Duration = 3
+                })
+                return
+            end
+        else
+            target = getNearestPlayer(40)
+            if not target then
+                getgenv().Notify({
+                    Title   = "hyaprojmodified | Sync",
+                    Content = "❌ Nenhum player próximo encontrado",
+                    Duration = 3
+                })
+                return
+            end
         end
+
         getgenv().Notify({
             Title   = "hyaprojmodified | Sync",
             Content = "🔍 Sincronizando com " .. target.Name .. "...",
@@ -9719,6 +9754,19 @@ task.spawn(function()
     local kbAddItem = SettingsLib.AddItem(ExtrasTab, "Adicionar Keybind", nil)
     kbAddItem.LayoutOrder = 11
 
+    -- botão DETECTAR: captura a próxima tecla pressionada e preenche keyBox
+    local detectConn = nil
+    local detectBtn = SettingsLib:Create("TextButton", {
+        Parent            = kbAddItem,
+        BackgroundColor3  = Color3.fromRGB(80, 80, 80),
+        Position          = UDim2.new(1, -290, 0.5, -12),
+        Size              = UDim2.new(0, 65, 0, 24),
+        Font              = Enum.Font.GothamBold,
+        Text              = "DETECTAR",
+        TextColor3        = Color3.new(1, 1, 1),
+        TextSize          = 9,
+    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
     local keyBox = SettingsLib:Create("TextBox", {
         Parent              = kbAddItem,
         BackgroundColor3    = Color3.fromRGB(40, 40, 45),
@@ -9731,6 +9779,31 @@ task.spawn(function()
         TextSize            = 11,
         ClearTextOnFocus    = false,
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
+    detectBtn.MouseButton1Click:Connect(function()
+        if detectConn then
+            detectConn:Disconnect()
+            detectConn = nil
+            detectBtn.Text = "DETECTAR"
+            detectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            return
+        end
+
+        detectBtn.Text = "APERTE..."
+        detectBtn.BackgroundColor3 = Color3.fromRGB(200, 130, 0)
+
+        detectConn = UserInputService.InputBegan:Connect(function(input, gp)
+            if gp then return end
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if input.KeyCode == Enum.KeyCode.Unknown or input.KeyCode == Enum.KeyCode.Escape then return end
+
+            keyBox.Text = input.KeyCode.Name
+            detectConn:Disconnect()
+            detectConn = nil
+            detectBtn.Text = "DETECTAR"
+            detectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+        end)
+    end)
 
     local idBox = SettingsLib:Create("TextBox", {
         Parent              = kbAddItem,
@@ -9757,10 +9830,17 @@ task.spawn(function()
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
     kbAddBtn.MouseButton1Click:Connect(function()
+        -- cancela detecção pendente se clicar SALVAR enquanto aguarda tecla
+        if detectConn then
+            detectConn:Disconnect()
+            detectConn = nil
+            detectBtn.Text = "DETECTAR"
+            detectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+        end
         local key = keyBox.Text:upper():gsub("%s", "")
         local id  = idBox.Text:gsub("%s", "")
         if key == "" then
-            getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ Digite uma tecla (ex: F1, Z, X)", Duration=3})
+            getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ Digite ou detecte uma tecla", Duration=3})
             return
         end
         if id == "" then
