@@ -8906,7 +8906,10 @@ end
 -- ============================================================
 
 local HyaExt = {}
-HyaExt.SyncConn     = nil
+HyaExt.SyncConn        = nil
+HyaExt.SyncTarget      = nil
+HyaExt.SyncHeartbeat   = nil
+HyaExt.SyncTrackId     = nil
 HyaExt.CamConn      = nil
 HyaExt.CamLocked    = false
 HyaExt.LockedCFrame = nil
@@ -8914,6 +8917,7 @@ HyaExt.LockedCFrame = nil
 HyaExt.CamHeadEnabled = false
 HyaExt.CamHeadConn    = nil
 HyaExt.CamHeadSpeed   = 10     -- suavidade: 8=suave, 15=duro
+HyaExt.CamHeadYOffset = 0      -- offset extra de altura (positivo = mais alto, negativo = mais baixo)
 HyaExt.CamHeadOffset  = nil    -- Vector3: câmera - cabeça (no momento em que liga)
 HyaExt.CamHeadRot     = nil    -- rotação (ângulo) da câmera no momento em que liga
 -- CamSave (câmera salva RELATIVA ao boneco: acompanha quando você anda)
@@ -9044,7 +9048,31 @@ local function getNearestPlayer(maxDist)
     return best
 end
 
+local function stopSyncLoop()
+    if HyaExt.SyncHeartbeat then
+        HyaExt.SyncHeartbeat:Disconnect()
+        HyaExt.SyncHeartbeat = nil
+    end
+    HyaExt.SyncTarget  = nil
+    HyaExt.SyncTrackId = nil
+end
+
 function HyaExt.SyncEmote(targetPlayer)
+    -- se já tem sync ativo, para
+    if HyaExt.SyncHeartbeat then
+        stopSyncLoop()
+        if State.currentEmoteTrack then
+            State.currentEmoteTrack:Stop()
+            State.currentEmoteTrack = nil
+        end
+        getgenv().Notify({
+            Title   = "hyaprojmodified | Sync",
+            Content = "⏹ Sync parado",
+            Duration = 2
+        })
+        return
+    end
+
     local emoteId, timePos = getPlayingEmoteId(targetPlayer)
     if not emoteId then
         getgenv().Notify({
@@ -9055,9 +9083,9 @@ function HyaExt.SyncEmote(targetPlayer)
         return
     end
 
-    local lp    = game.Players.LocalPlayer
-    local char  = lp and lp.Character
-    local hum   = char and char:FindFirstChildOfClass("Humanoid")
+    local lp   = game.Players.LocalPlayer
+    local char = lp and lp.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
     -- para o emote atual
@@ -9074,33 +9102,70 @@ function HyaExt.SyncEmote(targetPlayer)
         return hum.Animator:LoadAnimation(anim)
     end)
 
-    if ok and track then
-        State.currentEmoteTrack = track
-        track.Priority = Enum.AnimationPriority.Action
-        track.Looped   = true
-        task.wait(0.05)
-        track:Play()
-        -- sincroniza posição temporal
-        if timePos and timePos > 0 then
-            task.wait(0.05)
-            pcall(function() track.TimePosition = timePos end)
-        end
-        if State.speedEmoteEnabled then
-            local spd = tonumber(UI.SpeedBox and UI.SpeedBox.Text) or 1
-            track:AdjustSpeed(spd)
-        end
-        getgenv().Notify({
-            Title   = "hyaprojmodified | Sync",
-            Content = "✅ Emote sincronizado! ID: " .. emoteId,
-            Duration = 3
-        })
-    else
+    if not (ok and track) then
         getgenv().Notify({
             Title   = "hyaprojmodified | Sync",
             Content = "❌ Falha ao carregar emote " .. emoteId,
             Duration = 3
         })
+        return
     end
+
+    State.currentEmoteTrack = track
+    track.Priority = Enum.AnimationPriority.Action
+    track.Looped   = true
+    track:Play()
+
+    -- alinha posição inicial
+    task.wait(0.05)
+    local _, freshTime = getPlayingEmoteId(targetPlayer)
+    if freshTime and freshTime > 0 then
+        pcall(function() track.TimePosition = freshTime end)
+    end
+
+    if State.speedEmoteEnabled then
+        local spd = tonumber(UI.SpeedBox and UI.SpeedBox.Text) or 1
+        track:AdjustSpeed(spd)
+    end
+
+    -- guarda referências para o loop contínuo
+    HyaExt.SyncTarget  = targetPlayer
+    HyaExt.SyncTrackId = emoteId
+
+    -- loop contínuo: mantém TimePosition igual ao do target
+    HyaExt.SyncHeartbeat = RunService.Heartbeat:Connect(function()
+        local curChar = HyaExt.SyncTarget and HyaExt.SyncTarget.Character
+        if not curChar then
+            stopSyncLoop()
+            return
+        end
+
+        local curId, curTime = getPlayingEmoteId(HyaExt.SyncTarget)
+
+        -- target parou ou trocou de emote → encerra sync
+        if curId ~= HyaExt.SyncTrackId then
+            stopSyncLoop()
+            if State.currentEmoteTrack then
+                State.currentEmoteTrack:Stop()
+                State.currentEmoteTrack = nil
+            end
+            return
+        end
+
+        -- ajusta TimePosition continuamente (tolerância 0.1s para não ficar choppy)
+        if curTime and track.IsPlaying then
+            local diff = math.abs(track.TimePosition - curTime)
+            if diff > 0.1 then
+                pcall(function() track.TimePosition = curTime end)
+            end
+        end
+    end)
+
+    getgenv().Notify({
+        Title   = "hyaprojmodified | Sync",
+        Content = "✅ Sync contínuo ativo com " .. targetPlayer.Name .. "! ID: " .. emoteId,
+        Duration = 3
+    })
 end
 
 -- ── 2. CAM LOCK ───────────────────────────────────────────────
@@ -9205,8 +9270,8 @@ local function camHeadLoop()
             HyaExt.CamHeadBaseOffset = diff
         end
 
-        -- target = só o quanto a cabeça se moveu ALÉM da posição de repouso
-        local target = diff - HyaExt.CamHeadBaseOffset
+        -- target = só o quanto a cabeça se moveu ALÉM da posição de repouso + offset de altura manual
+        local target = diff - HyaExt.CamHeadBaseOffset + Vector3.new(0, HyaExt.CamHeadYOffset or 0, 0)
 
         -- lerp suave
         local speed  = math.clamp(HyaExt.CamHeadSpeed or 10, 1, 50)
@@ -9726,7 +9791,25 @@ task.spawn(function()
         TextSize          = 11,
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
+    local function refreshSyncBtn()
+        if HyaExt.SyncHeartbeat then
+            syncBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+            syncBtn.Text = "STOP"
+        else
+            syncBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 120)
+            syncBtn.Text = "SYNC"
+        end
+    end
+    table.insert(refreshers, refreshSyncBtn)
+
     syncBtn.MouseButton1Click:Connect(function()
+        -- se sync ativo, para direto
+        if HyaExt.SyncHeartbeat then
+            HyaExt.SyncEmote(nil) -- chama com nil — a função detecta sync ativo e para
+            refreshSyncBtn()
+            return
+        end
+
         local nick = nickBox.Text:gsub("%s", "")
         local target = nil
 
@@ -9763,6 +9846,7 @@ task.spawn(function()
             Duration = 2
         })
         HyaExt.SyncEmote(target)
+        refreshSyncBtn()
     end)
 
     -- atualiza todos os botões de câmera de uma vez (os modos são exclusivos)
@@ -9839,6 +9923,32 @@ task.spawn(function()
         speedBox.Text = tostring(HyaExt.CamHeadSpeed)
     end)
 
+    -- campo de altura do CamHead
+    local heightItem = SettingsLib.AddItem(ExtrasTab, "CamHead Altura", "Ajusta a altura da câmera (0 = padrão, negativo = mais baixo, positivo = mais alto)")
+    heightItem.LayoutOrder = 5
+
+    local heightBox = SettingsLib:Create("TextBox", {
+        Parent              = heightItem,
+        BackgroundColor3    = Color3.fromRGB(40, 40, 45),
+        Position            = UDim2.new(1, -90, 0.5, -12),
+        Size                = UDim2.new(0, 80, 0, 24),
+        Font                = Enum.Font.Gotham,
+        Text                = tostring(HyaExt.CamHeadYOffset),
+        TextColor3          = Color3.new(1, 1, 1),
+        TextSize            = 12,
+        ClearTextOnFocus    = false,
+    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
+    heightBox.FocusLost:Connect(function()
+        local v = tonumber(heightBox.Text)
+        if v ~= nil then
+            HyaExt.CamHeadYOffset = v
+            -- reseta o base offset para recalcular com o novo valor imediatamente
+            HyaExt.CamHeadBaseOffset = nil
+        end
+        heightBox.Text = tostring(HyaExt.CamHeadYOffset)
+    end)
+
     table.insert(refreshers, function()
         if HyaExt.CamHeadEnabled then
             camHeadBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
@@ -9862,7 +9972,7 @@ task.spawn(function()
             "Cam Salva " .. slotName,
             "SALVAR guarda a câmera atual (relativa ao boneco) | USAR liga/desliga"
         )
-        slotItem.LayoutOrder = 4 + i
+        slotItem.LayoutOrder = 5 + i
 
         local saveBtn = SettingsLib:Create("TextButton", {
             Parent            = slotItem,
@@ -9907,7 +10017,7 @@ task.spawn(function()
 
     -- modo de acompanhamento
     local rotItem = SettingsLib.AddItem(ExtrasTab, "Lock/Cam Salva: girar com o boneco", "OFF = só acompanha a posição (melhor para andar) | ON = sempre na mesma face")
-    rotItem.LayoutOrder = 8
+    rotItem.LayoutOrder = 9
     local rotBtn = SettingsLib:Create("TextButton", {
         Parent            = rotItem,
         BackgroundColor3  = Color3.fromRGB(80, 80, 80),
@@ -9933,7 +10043,7 @@ task.spawn(function()
     -- ajusta LayoutOrder dos keybinds para ficar depois
     -- ── KEYBINDS ──
     local kbTitleItem = SettingsLib.AddItem(ExtrasTab, "Keybinds de Emote", "Pressione uma tecla para tocar o emote configurado")
-    kbTitleItem.LayoutOrder = 10
+    kbTitleItem.LayoutOrder = 11
 
     local kbListBtn = SettingsLib:Create("TextButton", {
         Parent            = kbTitleItem,
@@ -9949,7 +10059,7 @@ task.spawn(function()
 
     -- linha: campo KEY + campo EMOTE ID + botão ADICIONAR
     local kbAddItem = SettingsLib.AddItem(ExtrasTab, "Adicionar Keybind", nil)
-    kbAddItem.LayoutOrder = 11
+    kbAddItem.LayoutOrder = 12
 
     -- botão DETECTAR: captura a próxima tecla pressionada e preenche keyBox
     local detectConn = nil
@@ -10056,7 +10166,7 @@ task.spawn(function()
 
     -- ── PEGAR ID do emote que está tocando ──
     local getItem = SettingsLib.AddItem(ExtrasTab, "Pegar ID do emote tocando", "Toque um emote no menu e clique PEGAR: o ID vai para o campo Emote ID")
-    getItem.LayoutOrder = 12
+    getItem.LayoutOrder = 13
     local getBtn = SettingsLib:Create("TextButton", {
         Parent            = getItem,
         BackgroundColor3  = Color3.fromRGB(60, 130, 220),
