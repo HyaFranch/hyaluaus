@@ -2248,13 +2248,88 @@ task.spawn(function()
         local exists, emotesWheel = checkEmotesMenuExists()
         if exists and emotesWheel then
             ApplyTheme(themes[currentThemeName])
-            
+
             emotesWheel:GetPropertyChangedSignal("Visible"):Connect(function()
                 if emotesWheel.Visible then
                     task.wait(0.05)
                     ApplyTheme(themes[currentThemeName])
                 end
             end)
+
+            -- ── Tooltip de ID no hover dos slots do wheel ──────────────
+            pcall(function()
+                local EmotesButtons = emotesWheel:WaitForChild("Front", 5)
+                    and emotesWheel.Front:WaitForChild("EmotesButtons", 5)
+                if not EmotesButtons then return end
+
+                -- cria GUI de tooltip
+                local ttGui = Instance.new("ScreenGui")
+                ttGui.Name        = "HyaEmoteIdTooltip"
+                ttGui.IgnoreGuiInset = true
+                ttGui.DisplayOrder  = 200
+                ttGui.ResetOnSpawn  = false
+                ttGui.Parent        = game:GetService("CoreGui")
+
+                local ttFrame = Instance.new("Frame")
+                ttFrame.Name              = "Frame"
+                ttFrame.BackgroundColor3  = Color3.fromRGB(20, 21, 26)
+                ttFrame.BorderSizePixel   = 0
+                ttFrame.Size              = UDim2.new(0, 160, 0, 28)
+                ttFrame.Visible           = false
+                ttFrame.ZIndex            = 999
+                ttFrame.Parent            = ttGui
+                local ttCorner = Instance.new("UICorner")
+                ttCorner.CornerRadius = UDim.new(0, 6)
+                ttCorner.Parent = ttFrame
+                local ttStroke = Instance.new("UIStroke")
+                ttStroke.Color     = Color3.fromRGB(70, 80, 110)
+                ttStroke.Thickness = 1
+                ttStroke.Parent    = ttFrame
+
+                local ttLabel = Instance.new("TextLabel")
+                ttLabel.BackgroundTransparency = 1
+                ttLabel.Size                   = UDim2.new(1, -10, 1, 0)
+                ttLabel.Position               = UDim2.new(0, 8, 0, 0)
+                ttLabel.Font                   = Enum.Font.GothamBold
+                ttLabel.TextColor3             = Color3.fromRGB(180, 200, 255)
+                ttLabel.TextSize               = 11
+                ttLabel.TextXAlignment         = Enum.TextXAlignment.Left
+                ttLabel.Text                   = ""
+                ttLabel.ZIndex                 = 1000
+                ttLabel.Parent                 = ttFrame
+
+                -- conecta hover em cada slot
+                local function hookSlot(slot)
+                    if not slot:IsA("ImageLabel") then return end
+                    slot.MouseEnter:Connect(function()
+                        local idVal = slot:FindFirstChild("AnimationID")
+                        if not idVal or idVal.Value == 0 then return end
+                        local id = tostring(idVal.Value)
+
+                        -- posiciona acima do slot
+                        local ap = slot.AbsolutePosition
+                        local as = slot.AbsoluteSize
+                        local tx = ap.X + as.X / 2 - 80
+                        local ty = ap.Y - 34
+                        ttFrame.Position = UDim2.new(0, tx, 0, ty)
+
+                        -- copia e mostra feedback
+                        pcall(function() setclipboard(id) end)
+                        ttLabel.Text = "ID: " .. id .. "  ✓ copiado!"
+                        ttFrame.Visible = true
+                    end)
+                    slot.MouseLeave:Connect(function()
+                        ttFrame.Visible = false
+                    end)
+                end
+
+                for _, child in pairs(EmotesButtons:GetChildren()) do
+                    hookSlot(child)
+                end
+                EmotesButtons.ChildAdded:Connect(hookSlot)
+            end)
+            -- ────────────────────────────────────────────────────────────
+
             break
         end
         attempts = attempts + 1
@@ -9020,7 +9095,17 @@ local function stopAllCamModes()
         HyaExt.CamHeadConn = nil
     end
     local cam = workspace.CurrentCamera
-    if cam then cam.CameraType = Enum.CameraType.Custom end
+    if cam then
+        cam.CameraType = Enum.CameraType.Custom
+        -- Força o sistema de câmera padrão do Roblox a retomar
+        -- (sem isso a câmera fica congelada após desativar com personagem novo)
+        local lp   = game.Players.LocalPlayer
+        local char = lp and lp.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            cam.CameraSubject = hum
+        end
+    end
 end
 
 -- ── 2b. CAM HEAD ──────────────────────────────────────────────
@@ -9253,12 +9338,26 @@ function HyaExt.SetCamFollowRotate(on)
     hyaSave()
 end
 
--- mantém os modos depois de morrer
+-- mantém os modos depois de morrer (e recalibra offsets para o novo personagem)
 game.Players.LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(0.3)
+    task.wait(0.5)   -- aguarda câmera de respawn do Roblox terminar
     if HyaExt.CamFollowEnabled then
+        -- Atualiza base de rotação para o novo personagem
+        local root = getRoot()
+        if root then
+            HyaExt.CamFollowBaseRot = root.CFrame - root.CFrame.Position
+            HyaExt.CamFollowStart   = os.clock()
+        end
         camFollowLoop()
     elseif HyaExt.CamHeadEnabled then
+        -- Recalcula offset cabeça→câmera com o personagem novo
+        -- (o offset antigo era relativo à posição de antes de morrer)
+        local head = getHead()
+        local cam  = workspace.CurrentCamera
+        if head and cam then
+            HyaExt.CamHeadOffset = cam.CFrame.Position - head.Position
+            HyaExt.CamHeadRot    = cam.CFrame - cam.CFrame.Position
+        end
         camHeadLoop()
     end
 end)
@@ -9595,7 +9694,7 @@ task.spawn(function()
     kbListBtn.MouseButton1Click:Connect(HyaExt.ListKeybinds)
 
     -- linha: campo KEY + campo EMOTE ID + botão ADICIONAR
-    local kbAddItem = SettingsLib.AddItem(ExtrasTab, "Adicionar Keybind", "Tecla (ex: F1) + ID do emote. Use PEGAR abaixo")
+    local kbAddItem = SettingsLib.AddItem(ExtrasTab, "Adicionar Keybind", nil)
     kbAddItem.LayoutOrder = 11
 
     local keyBox = SettingsLib:Create("TextBox", {
