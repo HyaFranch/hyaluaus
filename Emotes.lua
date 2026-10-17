@@ -9183,6 +9183,10 @@ local function camHeadLoop()
         HyaExt.CamHeadConn = nil
     end
 
+    -- captura o offset padrão (cabeça em repouso, antes de qualquer emote)
+    -- para não somar o que o Roblox já compensa nativamente
+    HyaExt.CamHeadBaseOffset = nil
+
     HyaExt.CamHeadConn = RunService.RenderStepped:Connect(function(dt)
         if not HyaExt.CamHeadEnabled then return end
 
@@ -9191,17 +9195,20 @@ local function camHeadLoop()
         local hrp  = getHRP()
         if not hum or not head or not hrp then return end
 
-        -- Diferença de altura entre a cabeça animada e o HRP.
-        -- O sistema de câmera do Roblox orbita em torno do HRP + CameraOffset,
-        -- então passamos só a diferença Y (e X/Z se o emote deslocar).
         local headPos = head.Position
         local hrpPos  = hrp.Position
-        local diff    = headPos - hrpPos   -- Vector3 local (mundo)
+        local diff    = headPos - hrpPos   -- diferença atual cabeça→HRP
 
-        -- alvo: offset = diferença cabeça→HRP
-        local target = diff
+        -- guarda o offset em repouso na primeira frame (sem emote ainda)
+        -- assim só compensamos o EXTRA causado pelo emote, não a altura normal
+        if not HyaExt.CamHeadBaseOffset then
+            HyaExt.CamHeadBaseOffset = diff
+        end
 
-        -- lerp suave: velocidade controlada por CamHeadSpeed
+        -- target = só o quanto a cabeça se moveu ALÉM da posição de repouso
+        local target = diff - HyaExt.CamHeadBaseOffset
+
+        -- lerp suave
         local speed  = math.clamp(HyaExt.CamHeadSpeed or 10, 1, 50)
         local alpha  = math.clamp(speed * dt, 0, 1)
 
@@ -9354,23 +9361,24 @@ local function camFollowLoop()
 
         -- ── integração com CamHead ──────────────────────────────
         -- Se CamHead estiver ativo junto com CamLock/CamSave,
-        -- deslocamos o target verticalmente pela diferença cabeça→HRP,
-        -- assim o ângulo travado acompanha o emote sem travar a câmera.
+        -- deslocamos o target pelo EXTRA causado pelo emote
+        -- (subtrai o offset de repouso para não subir sem motivo).
         if HyaExt.CamHeadEnabled then
             local head = getHead()
-            local hrp  = root   -- root já é o HumanoidRootPart
+            local hrp  = root
             if head and hrp then
                 local speed  = math.clamp(HyaExt.CamHeadSpeed or 10, 1, 50)
                 local alpha  = math.clamp(speed * dt, 0, 1)
                 local diff   = head.Position - hrp.Position
 
-                -- lerp suave do offset acumulado
-                HyaExt.CamHeadAccum = (HyaExt.CamHeadAccum or Vector3.new(0,0,0)):Lerp(diff, alpha)
-                target = target + Vector3.new(
-                    HyaExt.CamHeadAccum.X,
-                    HyaExt.CamHeadAccum.Y,
-                    HyaExt.CamHeadAccum.Z
-                )
+                -- captura posição de repouso na primeira frame
+                if not HyaExt.CamHeadBaseOffset then
+                    HyaExt.CamHeadBaseOffset = diff
+                end
+                local extra = diff - HyaExt.CamHeadBaseOffset
+
+                HyaExt.CamHeadAccum = (HyaExt.CamHeadAccum or Vector3.new(0,0,0)):Lerp(extra, alpha)
+                target = target + HyaExt.CamHeadAccum
             end
         else
             -- CamHead desligado: zera o acumulador suavemente
