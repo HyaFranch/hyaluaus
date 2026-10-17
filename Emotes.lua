@@ -9124,7 +9124,7 @@ local function camHeadLoop()
         HyaExt.CamHeadConn:Disconnect()
         HyaExt.CamHeadConn = nil
     end
-    HyaExt.CamHeadConn = RunService.RenderStepped:Connect(function(dt)
+    HyaExt.CamHeadConn = RunService.RenderStepped:Connect(function()
         if not HyaExt.CamHeadEnabled or not HyaExt.CamHeadOffset then return end
         local head = getHead()
         if not head then return end
@@ -9132,10 +9132,9 @@ local function camHeadLoop()
         local cam = workspace.CurrentCamera
         cam.CameraType = Enum.CameraType.Scriptable
 
-        local targetPos = head.Position + HyaExt.CamHeadOffset
-        local alpha     = 1 - math.exp(-HyaExt.CamHeadSpeed * dt)   -- suave, independe do FPS
-        local newPos    = cam.CFrame.Position:Lerp(targetPos, alpha)
-        cam.CFrame      = CFrame.new(newPos) * HyaExt.CamHeadRot    -- ângulo fixo
+        -- Câmera presa ao CFrame da cabeça (offset relativo capturado na ativação).
+        -- Sem lerp: acompanha pulos/emotes instantaneamente — estilo "dahood content".
+        cam.CFrame = head.CFrame * HyaExt.CamHeadOffset
     end)
 end
 
@@ -9160,13 +9159,14 @@ function HyaExt.ToggleCamHead()
         end
         -- desliga qualquer outro modo (CamLock / CamSave) antes de ligar
         stopAllCamModes()
-        HyaExt.CamHeadOffset  = cam.CFrame.Position - head.Position   -- distância atual até a cabeça
-        HyaExt.CamHeadRot     = cam.CFrame - cam.CFrame.Position      -- ângulo atual
+        -- Guarda o offset RELATIVO ao CFrame da cabeça (posição + rotação).
+        -- Assim a câmera acompanha TUDO: pulo, emote, qualquer animação.
+        HyaExt.CamHeadOffset  = head.CFrame:ToObjectSpace(cam.CFrame)
         HyaExt.CamHeadEnabled = true
         camHeadLoop()
         getgenv().Notify({
             Title   = "hyaprojmodified | CamHead",
-            Content = "🎯 CamHead ligado — câmera acompanha a cabeça (3ª pessoa)",
+            Content = "🎯 CamHead ligado — câmera colada na cabeça (dahood style)",
             Duration = 2
         })
     end
@@ -9355,8 +9355,7 @@ game.Players.LocalPlayer.CharacterAdded:Connect(function()
         local head = getHead()
         local cam  = workspace.CurrentCamera
         if head and cam then
-            HyaExt.CamHeadOffset = cam.CFrame.Position - head.Position
-            HyaExt.CamHeadRot    = cam.CFrame - cam.CFrame.Position
+            HyaExt.CamHeadOffset = head.CFrame:ToObjectSpace(cam.CFrame)
         end
         camHeadLoop()
     end
@@ -9406,6 +9405,31 @@ local function playKeybindEmote(hum, id)
     HyaExt.PlayAnimId(hum, num)
 end
 
+-- Busca KeyCode aceitando: "1"→One, "F1"→F1, "Enum.KeyCode.One"→One
+-- (case-insensitive + aliases numéricos)
+local NUM_ALIASES = {
+    ["0"]="Zero",["1"]="One",["2"]="Two",["3"]="Three",["4"]="Four",
+    ["5"]="Five",["6"]="Six",["7"]="Seven",["8"]="Eight",["9"]="Nine",
+}
+local function findKeyCode(raw)
+    -- strip "Enum.KeyCode." prefix (qualquer casing)
+    local name = tostring(raw):gsub("^[Ee][Nn][Uu][Mm]%.[Kk][Ee][Yy][Cc][Oo][Dd][Ee]%.", "")
+                               :gsub("%s", "")
+    -- alias numérico
+    name = NUM_ALIASES[name] or name
+    -- busca case-insensitive nos itens do enum
+    local upper = name:upper()
+    for _, kc in pairs(Enum.KeyCode:GetEnumItems()) do
+        if kc.Name:upper() == upper then return kc end
+    end
+    return nil
+end
+
+local function normalizeKeyName(raw)
+    local kc = findKeyCode(raw)
+    return kc and kc.Name or tostring(raw):gsub("%s", ""):upper()
+end
+
 local function rebuildKeybindConnections()
     for _, conn in pairs(HyaExt.KeybindConns) do
         pcall(function() conn:Disconnect() end)
@@ -9413,10 +9437,8 @@ local function rebuildKeybindConnections()
     HyaExt.KeybindConns = {}
 
     for keyName, emoteId in pairs(HyaExt.Keybinds) do
-        local ok, enumKey = pcall(function()
-            return Enum.KeyCode[keyName]
-        end)
-        if ok and enumKey then
+        local enumKey = findKeyCode(keyName)
+        if enumKey then
             local conn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
                 if gameProcessed then return end
                 if input.KeyCode == enumKey then
@@ -9437,7 +9459,7 @@ end
 rebuildKeybindConnections()   -- aplica keybinds salvos
 
 function HyaExt.SetKeybind(keyName, emoteId)
-    keyName = tostring(keyName):upper()
+    keyName = normalizeKeyName(keyName)   -- aceita "1", "Enum.KeyCode.One", "f1", etc.
     if emoteId == nil or emoteId == "" then
         HyaExt.Keybinds[keyName] = nil
         getgenv().Notify({
