@@ -9763,6 +9763,12 @@ task.spawn(function()
 
     local ExtrasTab = SettingsLib.CreateTab("Extras", 99)
 
+    -- atualiza todos os botões de câmera de uma vez (os modos são exclusivos)
+    local refreshers = {}
+    local function refreshCamButtons()
+        for _, f in ipairs(refreshers) do pcall(f) end
+    end
+
     -- ── EMOTE SYNC ──
     local syncItem = SettingsLib.AddItem(ExtrasTab, "Emote Sync", "Nick = sincroniza com esse player | Vazio = mais próximo (<40 studs)")
     syncItem.LayoutOrder = 1
@@ -9848,12 +9854,6 @@ task.spawn(function()
         HyaExt.SyncEmote(target)
         refreshSyncBtn()
     end)
-
-    -- atualiza todos os botões de câmera de uma vez (os modos são exclusivos)
-    local refreshers = {}
-    local function refreshCamButtons()
-        for _, f in ipairs(refreshers) do pcall(f) end
-    end
 
     -- ── CAM LOCK ──
     local camItem = SettingsLib.AddItem(ExtrasTab, "Camera Lock", "Trava o ajuste atual (ângulo/distância) e acompanha o boneco")
