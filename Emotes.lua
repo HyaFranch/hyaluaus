@@ -9129,23 +9129,35 @@ local function stopAllCamModes()
         HyaExt.CamHeadConn = nil
     end
     local cam = workspace.CurrentCamera
+    local lp   = game.Players.LocalPlayer
+    local char = lp and lp.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
     if cam then
         cam.CameraType = Enum.CameraType.Custom
-        -- Força o sistema de câmera padrão do Roblox a retomar
-        -- (sem isso a câmera fica congelada após desativar com personagem novo)
-        local lp   = game.Players.LocalPlayer
-        local char = lp and lp.Character
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
         if hum then
             cam.CameraSubject = hum
         end
     end
+    -- reseta CameraOffset ao zero para não deixar câmera deslocada
+    if hum then
+        task.spawn(function()
+            local steps = 10
+            for i = 1, steps do
+                if HyaExt.CamHeadEnabled then return end
+                hum.CameraOffset = hum.CameraOffset:Lerp(Vector3.new(0, 0, 0), 0.35)
+                task.wait(0.016)
+            end
+            if not HyaExt.CamHeadEnabled then
+                hum.CameraOffset = Vector3.new(0, 0, 0)
+            end
+        end)
+    end
 end
 
 -- ── 2b. CAM HEAD ──────────────────────────────────────────────
---  TERCEIRA PESSOA: a câmera acompanha a POSIÇÃO da cabeça
---  (suave), mantendo o ângulo e a distância que você deixou
---  quando ligou. Bom para emotes que sobem/descem/pulam.
+--  Desloca o pivot da câmera até a cabeça via Humanoid.CameraOffset
+--  (lerp suave). A câmera padrão do Roblox continua no controle,
+--  então o player ainda consegue girar/zoom normalmente.
 -- ─────────────────────────────────────────────────────────────
 local function getHead()
     local lp   = game.Players.LocalPlayer
@@ -9153,28 +9165,107 @@ local function getHead()
     return char and char:FindFirstChild("Head")
 end
 
+local function getHumanoid()
+    local lp   = game.Players.LocalPlayer
+    local char = lp and lp.Character
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getHRP()
+    local lp   = game.Players.LocalPlayer
+    local char = lp and lp.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
 local function camHeadLoop()
     if HyaExt.CamHeadConn then
         HyaExt.CamHeadConn:Disconnect()
         HyaExt.CamHeadConn = nil
     end
-    HyaExt.CamHeadConn = RunService.RenderStepped:Connect(function()
-        if not HyaExt.CamHeadEnabled or not HyaExt.CamHeadOffset then return end
+
+    HyaExt.CamHeadConn = RunService.RenderStepped:Connect(function(dt)
+        if not HyaExt.CamHeadEnabled then return end
+
+        local hum  = getHumanoid()
         local head = getHead()
-        if not head then return end
+        local hrp  = getHRP()
+        if not hum or not head or not hrp then return end
 
+        -- Diferença de altura entre a cabeça animada e o HRP.
+        -- O sistema de câmera do Roblox orbita em torno do HRP + CameraOffset,
+        -- então passamos só a diferença Y (e X/Z se o emote deslocar).
+        local headPos = head.Position
+        local hrpPos  = hrp.Position
+        local diff    = headPos - hrpPos   -- Vector3 local (mundo)
+
+        -- alvo: offset = diferença cabeça→HRP
+        local target = diff
+
+        -- lerp suave: velocidade controlada por CamHeadSpeed
+        local speed  = math.clamp(HyaExt.CamHeadSpeed or 10, 1, 50)
+        local alpha  = math.clamp(speed * dt, 0, 1)
+
+        local current = hum.CameraOffset
+        hum.CameraOffset = current:Lerp(target, alpha)
+
+        -- câmera padrão do Roblox permanece ativa (Custom) —
+        -- o player pode girar/zoom normalmente
         local cam = workspace.CurrentCamera
-        cam.CameraType = Enum.CameraType.Scriptable
+        if cam.CameraType ~= Enum.CameraType.Custom then
+            cam.CameraType = Enum.CameraType.Custom
+            cam.CameraSubject = hum
+        end
+    end)
+end
 
-        -- Câmera presa ao CFrame da cabeça (offset relativo capturado na ativação).
-        -- Sem lerp: acompanha pulos/emotes instantaneamente — estilo "dahood content".
-        cam.CFrame = head.CFrame * HyaExt.CamHeadOffset
+local function stopCamHead()
+    HyaExt.CamHeadEnabled = false
+    if HyaExt.CamHeadConn then
+        HyaExt.CamHeadConn:Disconnect()
+        HyaExt.CamHeadConn = nil
+    end
+    -- devolve CameraOffset ao zero suavemente via task.spawn
+    task.spawn(function()
+        local hum = getHumanoid()
+        if not hum then return end
+        local steps = 10
+        for i = 1, steps do
+            if HyaExt.CamHeadEnabled then return end  -- re-ligou durante reset
+            hum.CameraOffset = hum.CameraOffset:Lerp(Vector3.new(0, 0, 0), 0.35)
+            task.wait(0.016)
+        end
+        if not HyaExt.CamHeadEnabled then
+            hum.CameraOffset = Vector3.new(0, 0, 0)
+        end
     end)
 end
 
 function HyaExt.ToggleCamHead()
     if HyaExt.CamHeadEnabled then
-        stopAllCamModes()
+        -- desliga só o CamHead; preserva CamLock/CamSave se estiverem ativos
+        HyaExt.CamHeadEnabled = false
+        HyaExt.CamHeadAccum   = Vector3.new(0, 0, 0)
+        if HyaExt.CamHeadConn then
+            HyaExt.CamHeadConn:Disconnect()
+            HyaExt.CamHeadConn = nil
+        end
+        -- se não tiver CamLock nem CamSave ativos, reseta CameraOffset
+        if not HyaExt.CamFollowEnabled then
+            local hum = getHumanoid()
+            if hum then
+                task.spawn(function()
+                    local steps = 10
+                    for i = 1, steps do
+                        if HyaExt.CamHeadEnabled then return end
+                        hum.CameraOffset = hum.CameraOffset:Lerp(Vector3.new(0,0,0), 0.35)
+                        task.wait(0.016)
+                    end
+                    if not HyaExt.CamHeadEnabled then
+                        hum.CameraOffset = Vector3.new(0,0,0)
+                    end
+                end)
+            end
+        end
         getgenv().Notify({
             Title   = "hyaprojmodified | CamHead",
             Content = "🔓 CamHead desligado",
@@ -9182,27 +9273,39 @@ function HyaExt.ToggleCamHead()
         })
     else
         local head = getHead()
-        local cam  = workspace.CurrentCamera
-        if not head or not cam then
+        local hum  = getHumanoid()
+        if not head or not hum then
             getgenv().Notify({
                 Title   = "hyaprojmodified | CamHead",
-                Content = "❌ Cabeça do personagem não encontrada",
+                Content = "❌ Personagem não encontrado",
                 Duration = 3
             })
             return
         end
-        -- desliga qualquer outro modo (CamLock / CamSave) antes de ligar
-        stopAllCamModes()
-        -- Guarda o offset RELATIVO ao CFrame da cabeça (posição + rotação).
-        -- Assim a câmera acompanha TUDO: pulo, emote, qualquer animação.
-        HyaExt.CamHeadOffset  = head.CFrame:ToObjectSpace(cam.CFrame)
+
+        HyaExt.CamHeadAccum   = Vector3.new(0, 0, 0)
         HyaExt.CamHeadEnabled = true
-        camHeadLoop()
-        getgenv().Notify({
-            Title   = "hyaprojmodified | CamHead",
-            Content = "🎯 CamHead ligado — câmera colada na cabeça (dahood style)",
-            Duration = 2
-        })
+
+        if HyaExt.CamFollowEnabled then
+            -- CamLock ou CamSave já ativo: CamHead roda DENTRO do camFollowLoop
+            -- (já integrado lá). Não precisa de loop separado nem muda CameraType.
+            getgenv().Notify({
+                Title   = "hyaprojmodified | CamHead",
+                Content = "🎯 CamHead ligado com CamLock — ângulo travado + acompanha emote",
+                Duration = 2
+            })
+        else
+            -- modo solo: usa CameraOffset com câmera padrão
+            local cam = workspace.CurrentCamera
+            cam.CameraType    = Enum.CameraType.Custom
+            cam.CameraSubject = hum
+            camHeadLoop()
+            getgenv().Notify({
+                Title   = "hyaprojmodified | CamHead",
+                Content = "🎯 CamHead ligado — você ainda controla a câmera normalmente",
+                Duration = 2
+            })
+        end
     end
 end
 
@@ -9243,16 +9346,48 @@ local function camFollowLoop()
 
         local base
         if HyaExt.CamFollowRotate then
-            base = root.CFrame                                   -- gira junto com o boneco
+            base = root.CFrame
         else
             base = CFrame.new(root.Position) * (HyaExt.CamFollowBaseRot or CFrame.new())
         end
         local target = base * HyaExt.CamFollowOffset
 
+        -- ── integração com CamHead ──────────────────────────────
+        -- Se CamHead estiver ativo junto com CamLock/CamSave,
+        -- deslocamos o target verticalmente pela diferença cabeça→HRP,
+        -- assim o ângulo travado acompanha o emote sem travar a câmera.
+        if HyaExt.CamHeadEnabled then
+            local head = getHead()
+            local hrp  = root   -- root já é o HumanoidRootPart
+            if head and hrp then
+                local speed  = math.clamp(HyaExt.CamHeadSpeed or 10, 1, 50)
+                local alpha  = math.clamp(speed * dt, 0, 1)
+                local diff   = head.Position - hrp.Position
+
+                -- lerp suave do offset acumulado
+                HyaExt.CamHeadAccum = (HyaExt.CamHeadAccum or Vector3.new(0,0,0)):Lerp(diff, alpha)
+                target = target + Vector3.new(
+                    HyaExt.CamHeadAccum.X,
+                    HyaExt.CamHeadAccum.Y,
+                    HyaExt.CamHeadAccum.Z
+                )
+            end
+        else
+            -- CamHead desligado: zera o acumulador suavemente
+            if HyaExt.CamHeadAccum and HyaExt.CamHeadAccum.Magnitude > 0.01 then
+                HyaExt.CamHeadAccum = HyaExt.CamHeadAccum:Lerp(Vector3.new(0,0,0), 0.2)
+                target = target + Vector3.new(
+                    HyaExt.CamHeadAccum.X,
+                    HyaExt.CamHeadAccum.Y,
+                    HyaExt.CamHeadAccum.Z
+                )
+            end
+        end
+        -- ───────────────────────────────────────────────────────
+
         local cam = workspace.CurrentCamera
         cam.CameraType = Enum.CameraType.Scriptable
         if os.clock() - HyaExt.CamFollowStart < 0.35 then
-            -- transição suave só na hora de aplicar
             cam.CFrame = cam.CFrame:Lerp(target, 1 - math.exp(-18 * dt))
         else
             cam.CFrame = target
@@ -9264,10 +9399,24 @@ end
 --  acompanha o boneco. É o "SALVAR + USAR" na hora, sem slot.
 function HyaExt.ToggleCamLock()
     if HyaExt.CamLocked then
+        -- desliga só o CamLock; preserva CamHead se estiver ativo
+        local headWasOn = HyaExt.CamHeadEnabled
         stopAllCamModes()
+        if headWasOn then
+            -- religa CamHead no modo solo (CameraOffset)
+            HyaExt.CamHeadEnabled = true
+            HyaExt.CamHeadAccum   = Vector3.new(0, 0, 0)
+            local hum = getHumanoid()
+            local cam = workspace.CurrentCamera
+            if hum and cam then
+                cam.CameraType    = Enum.CameraType.Custom
+                cam.CameraSubject = hum
+                camHeadLoop()
+            end
+        end
         getgenv().Notify({
             Title   = "hyaprojmodified | CamLock",
-            Content = "🔓 Câmera liberada",
+            Content = headWasOn and "🔓 CamLock solto (CamHead ainda ativo)" or "🔓 Câmera liberada",
             Duration = 2
         })
         return
@@ -9282,17 +9431,23 @@ function HyaExt.ToggleCamLock()
         })
         return
     end
-    stopAllCamModes()   -- desliga CamHead / CamSave
+    local headWasOn = HyaExt.CamHeadEnabled
+    stopAllCamModes()   -- desliga tudo antes de configurar
     HyaExt.CamFollowOffset  = root.CFrame:ToObjectSpace(cam.CFrame)
     HyaExt.CamFollowBaseRot = root.CFrame - root.CFrame.Position
     HyaExt.CamFollowSlot    = nil
     HyaExt.CamFollowStart   = os.clock()
     HyaExt.CamFollowEnabled = true
     HyaExt.CamLocked        = true
+    -- se CamHead estava ativo antes, reativa junto
+    if headWasOn then
+        HyaExt.CamHeadEnabled = true
+        HyaExt.CamHeadAccum   = Vector3.new(0, 0, 0)
+    end
     camFollowLoop()
     getgenv().Notify({
         Title   = "hyaprojmodified | CamLock",
-        Content = "🔒 Ajuste da câmera travado — acompanha o boneco",
+        Content = headWasOn and "🔒 CamLock + CamHead ativos juntos" or "🔒 Ajuste da câmera travado — acompanha o boneco",
         Duration = 2
     })
 end
