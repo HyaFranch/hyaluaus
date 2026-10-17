@@ -8963,6 +8963,23 @@ hyaLoad()
 --  Detecta o emote que um player próximo está rodando e
 --  o reproduz sincronizado (mesma TimePosition).
 -- ─────────────────────────────────────────────────────────────
+-- IDs de animações padrão do Roblox (walk, idle, jump, etc.) para ignorar no sync
+local ROBLOX_DEFAULT_ANIMS = {
+    ["180435571"]  = true, -- walk
+    ["180426354"]  = true, -- run
+    ["507766388"]  = true, -- fall
+    ["507765644"]  = true, -- jump
+    ["507777826"]  = true, -- idle 1
+    ["507776043"]  = true, -- idle 2
+    ["507767714"]  = true, -- swim
+    ["507768216"]  = true, -- swim idle
+    ["180436148"]  = true, -- climb
+    ["616163682"]  = true, -- sit
+    ["754637456"]  = true, -- toolnone
+    ["754637867"]  = true, -- toolslash
+    ["754636246"]  = true, -- toollunge
+}
+
 local function getPlayingEmoteId(targetPlayer)
     local char = targetPlayer and targetPlayer.Character
     if not char then return nil, nil end
@@ -8972,19 +8989,36 @@ local function getPlayingEmoteId(targetPlayer)
     if not animator then return nil, nil end
 
     local tracks = animator:GetPlayingAnimationTracks()
+
+    -- 1ª passagem: tenta Action (mais confiável)
     for _, track in ipairs(tracks) do
-        if track.Priority == Enum.AnimationPriority.Action and track.IsPlaying then
+        if track.IsPlaying and track.Priority == Enum.AnimationPriority.Action then
             local id = track.Animation and track.Animation.AnimationId
-            if id and id ~= "" then
-                -- extrai só o número
-                local numId = id:match("%d+")
-                if numId then
-                    return numId, track.TimePosition
+            local numId = id and id:match("%d+")
+            if numId and not ROBLOX_DEFAULT_ANIMS[numId] then
+                return numId, track.TimePosition
+            end
+        end
+    end
+
+    -- 2ª passagem: aceita qualquer prioridade, desde que não seja animação padrão
+    local best, bestTime, bestWeight = nil, nil, -1
+    for _, track in ipairs(tracks) do
+        if track.IsPlaying then
+            local id = track.Animation and track.Animation.AnimationId
+            local numId = id and id:match("%d+")
+            if numId and not ROBLOX_DEFAULT_ANIMS[numId] then
+                local w = track.WeightCurrent or 0
+                if w > bestWeight then
+                    bestWeight = w
+                    best = numId
+                    bestTime = track.TimePosition
                 end
             end
         end
     end
-    return nil, nil
+
+    return best, bestTime
 end
 
 local function getNearestPlayer(maxDist)
