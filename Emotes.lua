@@ -8839,7 +8839,8 @@ HyaExt.LockedCFrame = nil
 HyaExt.CamHeadEnabled = false
 HyaExt.CamHeadConn    = nil
 HyaExt.CamHeadSpeed   = 10     -- suavidade: 8=suave, 15=duro
-HyaExt.CamHeadOffsetY = 0.15   -- elevação em relação ao centro da cabeça
+HyaExt.CamHeadOffset  = nil    -- Vector3: câmera - cabeça (no momento em que liga)
+HyaExt.CamHeadRot     = nil    -- rotação (ângulo) da câmera no momento em que liga
 -- CamSave (câmera salva RELATIVA ao boneco: acompanha quando você anda)
 HyaExt.CamSlotCount     = 3
 HyaExt.CamSlots         = {}      -- { ["1"] = {12 números do CFrame relativo ao HumanoidRootPart} }
@@ -9022,68 +9023,34 @@ local function stopAllCamModes()
     if cam then cam.CameraType = Enum.CameraType.Custom end
 end
 
-local function camLockLoop()
-    if HyaExt.CamConn then
-        HyaExt.CamConn:Disconnect()
-        HyaExt.CamConn = nil
-    end
-    HyaExt.CamConn = RunService.RenderStepped:Connect(function()
-        if HyaExt.CamLocked and HyaExt.LockedCFrame then
-            Camera = workspace.CurrentCamera
-            Camera.CameraType = Enum.CameraType.Scriptable
-            Camera.CFrame     = HyaExt.LockedCFrame
-        end
-    end)
-end
-
-function HyaExt.ToggleCamLock()
-    if HyaExt.CamLocked then
-        stopAllCamModes()
-        getgenv().Notify({
-            Title   = "hyaprojmodified | CamLock",
-            Content = "🔓 Câmera liberada",
-            Duration = 2
-        })
-    else
-        -- desliga qualquer outro modo (CamHead / CamSave) antes de travar
-        stopAllCamModes()
-        Camera = workspace.CurrentCamera
-        HyaExt.LockedCFrame = Camera.CFrame
-        HyaExt.CamLocked    = true
-        camLockLoop()
-        getgenv().Notify({
-            Title   = "hyaprojmodified | CamLock",
-            Content = "🔒 Câmera travada na posição atual",
-            Duration = 2
-        })
-    end
-end
-
 -- ── 2b. CAM HEAD ──────────────────────────────────────────────
---  Câmera segue a cabeça suavemente com lerp frame-rate-
---  independent. Ideal para assistir emotes em primeira pessoa.
+--  TERCEIRA PESSOA: a câmera acompanha a POSIÇÃO da cabeça
+--  (suave), mantendo o ângulo e a distância que você deixou
+--  quando ligou. Bom para emotes que sobem/descem/pulam.
 -- ─────────────────────────────────────────────────────────────
+local function getHead()
+    local lp   = game.Players.LocalPlayer
+    local char = lp and lp.Character
+    return char and char:FindFirstChild("Head")
+end
+
 local function camHeadLoop()
     if HyaExt.CamHeadConn then
         HyaExt.CamHeadConn:Disconnect()
         HyaExt.CamHeadConn = nil
     end
     HyaExt.CamHeadConn = RunService.RenderStepped:Connect(function(dt)
-        if not HyaExt.CamHeadEnabled then return end
-        local lp   = game.Players.LocalPlayer
-        local char = lp and lp.Character
-        local head = char and char:FindFirstChild("Head")
+        if not HyaExt.CamHeadEnabled or not HyaExt.CamHeadOffset then return end
+        local head = getHead()
         if not head then return end
 
         local cam = workspace.CurrentCamera
         cam.CameraType = Enum.CameraType.Scriptable
 
-        -- alvo: CFrame da cabeça + pequeno offset para cima
-        local target = head.CFrame * CFrame.new(0, HyaExt.CamHeadOffsetY, 0)
-
-        -- smooth frame-rate-independent
-        local alpha = 1 - math.exp(-HyaExt.CamHeadSpeed * dt)
-        cam.CFrame  = cam.CFrame:Lerp(target, alpha)
+        local targetPos = head.Position + HyaExt.CamHeadOffset
+        local alpha     = 1 - math.exp(-HyaExt.CamHeadSpeed * dt)   -- suave, independe do FPS
+        local newPos    = cam.CFrame.Position:Lerp(targetPos, alpha)
+        cam.CFrame      = CFrame.new(newPos) * HyaExt.CamHeadRot    -- ângulo fixo
     end)
 end
 
@@ -9096,13 +9063,25 @@ function HyaExt.ToggleCamHead()
             Duration = 2
         })
     else
+        local head = getHead()
+        local cam  = workspace.CurrentCamera
+        if not head or not cam then
+            getgenv().Notify({
+                Title   = "hyaprojmodified | CamHead",
+                Content = "❌ Cabeça do personagem não encontrada",
+                Duration = 3
+            })
+            return
+        end
         -- desliga qualquer outro modo (CamLock / CamSave) antes de ligar
         stopAllCamModes()
+        HyaExt.CamHeadOffset  = cam.CFrame.Position - head.Position   -- distância atual até a cabeça
+        HyaExt.CamHeadRot     = cam.CFrame - cam.CFrame.Position      -- ângulo atual
         HyaExt.CamHeadEnabled = true
         camHeadLoop()
         getgenv().Notify({
             Title   = "hyaprojmodified | CamHead",
-            Content = "👁 CamHead ligado — câmera segue a cabeça",
+            Content = "🎯 CamHead ligado — câmera acompanha a cabeça (3ª pessoa)",
             Duration = 2
         })
     end
@@ -9160,6 +9139,43 @@ local function camFollowLoop()
             cam.CFrame = target
         end
     end)
+end
+
+-- ── CAM LOCK: trava o ajuste atual (ângulo/distância) e ──────
+--  acompanha o boneco. É o "SALVAR + USAR" na hora, sem slot.
+function HyaExt.ToggleCamLock()
+    if HyaExt.CamLocked then
+        stopAllCamModes()
+        getgenv().Notify({
+            Title   = "hyaprojmodified | CamLock",
+            Content = "🔓 Câmera liberada",
+            Duration = 2
+        })
+        return
+    end
+    local root = getRoot()
+    local cam  = workspace.CurrentCamera
+    if not root or not cam then
+        getgenv().Notify({
+            Title   = "hyaprojmodified | CamLock",
+            Content = "❌ Personagem não encontrado",
+            Duration = 3
+        })
+        return
+    end
+    stopAllCamModes()   -- desliga CamHead / CamSave
+    HyaExt.CamFollowOffset  = root.CFrame:ToObjectSpace(cam.CFrame)
+    HyaExt.CamFollowBaseRot = root.CFrame - root.CFrame.Position
+    HyaExt.CamFollowSlot    = nil
+    HyaExt.CamFollowStart   = os.clock()
+    HyaExt.CamFollowEnabled = true
+    HyaExt.CamLocked        = true
+    camFollowLoop()
+    getgenv().Notify({
+        Title   = "hyaprojmodified | CamLock",
+        Content = "🔒 Ajuste da câmera travado — acompanha o boneco",
+        Duration = 2
+    })
 end
 
 function HyaExt.SaveCamSlot(slot)
@@ -9240,12 +9256,10 @@ end
 -- mantém os modos depois de morrer
 game.Players.LocalPlayer.CharacterAdded:Connect(function()
     task.wait(0.3)
-    if HyaExt.CamLocked and HyaExt.LockedCFrame then
-        camLockLoop()
+    if HyaExt.CamFollowEnabled then
+        camFollowLoop()
     elseif HyaExt.CamHeadEnabled then
         camHeadLoop()
-    elseif HyaExt.CamFollowEnabled then
-        camFollowLoop()
     end
 end)
 
@@ -9253,6 +9267,46 @@ end)
 --  Associa uma tecla a um emoteId. Pressionar a tecla
 --  reproduz o emote imediatamente.
 -- ─────────────────────────────────────────────────────────────
+-- toca uma animação por ID (ID de animação) e deixa rodando em loop
+function HyaExt.PlayAnimId(hum, animId)
+    if State.currentEmoteTrack then
+        pcall(function() State.currentEmoteTrack:Stop() end)
+        State.currentEmoteTrack = nil
+    end
+    pcall(stopEmotes)
+
+    local anim = Instance.new("Animation")
+    anim.AnimationId = "rbxassetid://" .. tostring(animId)
+
+    local ok, track = pcall(function()
+        return hum.Animator:LoadAnimation(anim)
+    end)
+    if ok and track then
+        State.currentEmoteTrack = track
+        track.Priority = Enum.AnimationPriority.Action
+        track.Looped   = true
+        track:Play()
+        if State.speedEmoteEnabled then
+            local spd = tonumber(UI.SpeedBox and UI.SpeedBox.Text) or 1
+            track:AdjustSpeed(spd)
+        end
+        return true
+    end
+    return false
+end
+
+-- 1º tenta como ID de emote do catálogo (o mesmo que o menu usa);
+-- se não tocar, tenta como ID de animação (o que o botão PEGAR devolve).
+local function playKeybindEmote(hum, id)
+    local num = tonumber(id)
+    if not num then return end
+    if playRandomEmote then
+        pcall(playRandomEmote, hum, num)
+        if State.currentEmoteTrack then return end
+    end
+    HyaExt.PlayAnimId(hum, num)
+end
+
 local function rebuildKeybindConnections()
     for _, conn in pairs(HyaExt.KeybindConns) do
         pcall(function() conn:Disconnect() end)
@@ -9272,7 +9326,7 @@ local function rebuildKeybindConnections()
                     local hum  = char and char:FindFirstChildOfClass("Humanoid")
                     if hum then
                         task.spawn(function()
-                            playEmote(hum, tostring(emoteId))
+                            playKeybindEmote(hum, emoteId)
                         end)
                     end
                 end
@@ -9365,7 +9419,7 @@ task.spawn(function()
     end
 
     -- ── CAM LOCK ──
-    local camItem = SettingsLib.AddItem(ExtrasTab, "Camera Lock", "Trava câmera na posição atual do MAPA (não acompanha o boneco)")
+    local camItem = SettingsLib.AddItem(ExtrasTab, "Camera Lock", "Trava o ajuste atual (ângulo/distância) e acompanha o boneco")
     camItem.LayoutOrder = 2
     local camBtn = SettingsLib:Create("TextButton", {
         Parent            = camItem,
@@ -9394,7 +9448,7 @@ task.spawn(function()
     end)
 
     -- ── CAM HEAD ──
-    local camHeadItem = SettingsLib.AddItem(ExtrasTab, "Cam Head (Smooth)", "Câmera segue a cabeça suavemente durante emotes")
+    local camHeadItem = SettingsLib.AddItem(ExtrasTab, "Cam Head (Smooth)", "Acompanha a cabeça suave (3ª pessoa, mantém seu ângulo)")
     camHeadItem.LayoutOrder = 3
 
     local camHeadBtn = SettingsLib:Create("TextButton", {
@@ -9499,7 +9553,7 @@ task.spawn(function()
     end
 
     -- modo de acompanhamento
-    local rotItem = SettingsLib.AddItem(ExtrasTab, "Cam Salva: girar com o boneco", "OFF = só acompanha a posição (melhor para andar) | ON = sempre na mesma face")
+    local rotItem = SettingsLib.AddItem(ExtrasTab, "Lock/Cam Salva: girar com o boneco", "OFF = só acompanha a posição (melhor para andar) | ON = sempre na mesma face")
     rotItem.LayoutOrder = 8
     local rotBtn = SettingsLib:Create("TextButton", {
         Parent            = rotItem,
@@ -9541,7 +9595,7 @@ task.spawn(function()
     kbListBtn.MouseButton1Click:Connect(HyaExt.ListKeybinds)
 
     -- linha: campo KEY + campo EMOTE ID + botão ADICIONAR
-    local kbAddItem = SettingsLib.AddItem(ExtrasTab, "Adicionar Keybind", "Ex: tecla=F1, ID do emote (número)")
+    local kbAddItem = SettingsLib.AddItem(ExtrasTab, "Adicionar Keybind", "Tecla (ex: F1) + ID do emote. Use PEGAR abaixo")
     kbAddItem.LayoutOrder = 11
 
     local keyBox = SettingsLib:Create("TextBox", {
@@ -9600,6 +9654,31 @@ task.spawn(function()
         end
         keyBox.Text = ""
         idBox.Text  = ""
+    end)
+
+    -- ── PEGAR ID do emote que está tocando ──
+    local getItem = SettingsLib.AddItem(ExtrasTab, "Pegar ID do emote tocando", "Toque um emote no menu e clique PEGAR: o ID vai para o campo Emote ID")
+    getItem.LayoutOrder = 12
+    local getBtn = SettingsLib:Create("TextButton", {
+        Parent            = getItem,
+        BackgroundColor3  = Color3.fromRGB(60, 130, 220),
+        Position          = UDim2.new(1, -90, 0.5, -12),
+        Size              = UDim2.new(0, 80, 0, 24),
+        Font              = Enum.Font.GothamBold,
+        Text              = "PEGAR",
+        TextColor3        = Color3.new(1, 1, 1),
+        TextSize          = 11,
+    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
+    getBtn.MouseButton1Click:Connect(function()
+        local id = getPlayingEmoteId(game.Players.LocalPlayer)
+        if not id then
+            getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ Nenhum emote tocando agora", Duration=3})
+            return
+        end
+        idBox.Text = tostring(id)
+        pcall(function() setclipboard(tostring(id)) end)
+        getgenv().Notify({Title="hyaprojmodified | Keybind", Content="📋 ID " .. tostring(id) .. " no campo (e copiado)", Duration=3})
     end)
 end)
 
