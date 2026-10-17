@@ -511,10 +511,15 @@ local MainFrame = Lib:Create("Frame", {
 MainFrame.Visible = false
 
 local Dragging, DragStart, StartPos
-MainFrame.InputBegan:Connect(function(input)
+MainFrame.InputBegan:Connect(function(input, gameProcessed)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        -- só inicia drag se o input foi no Header (barra de título), não nos conteúdos/scroll
+        local pos = input.Position
+        local absPos = MainFrame.AbsolutePosition
+        local headerBottom = absPos.Y + 60  -- altura do Header
+        if pos.Y > headerBottom then return end
         Dragging = true
-        DragStart = input.Position
+        DragStart = pos
         StartPos = MainFrame.Position
         input.Changed:Connect(function()
             if input.UserInputState == Enum.UserInputState.End then Dragging = false end
