@@ -9631,9 +9631,22 @@ end)
 function HyaExt.PlayAnimId(hum, animId)
     if State.currentEmoteTrack then
         pcall(function() State.currentEmoteTrack:Stop() end)
+        pcall(function() State.currentEmoteTrack:Destroy() end)
         State.currentEmoteTrack = nil
     end
     pcall(stopEmotes)
+
+    -- limpa tracks paradas para não estourar o limite de 32
+    pcall(function()
+        local animator = hum:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+                if not t.IsPlaying then
+                    t:Destroy()
+                end
+            end
+        end
+    end)
 
     local anim = Instance.new("Animation")
     anim.AnimationId = "rbxassetid://" .. tostring(animId)
@@ -10057,34 +10070,33 @@ task.spawn(function()
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
     kbListBtn.MouseButton1Click:Connect(HyaExt.ListKeybinds)
 
-    -- linha: campo KEY + campo EMOTE ID + botão ADICIONAR
-    local kbAddItem = SettingsLib.AddItem(ExtrasTab, "Adicionar Keybind", nil)
-    kbAddItem.LayoutOrder = 12
+    -- ── LINHA 1: Tecla ──
+    local kbKeyItem = SettingsLib.AddItem(ExtrasTab, "Keybind › Tecla", "Clique DETECTAR e aperte a tecla, ou digite o nome (ex: F, One, LeftAlt)")
+    kbKeyItem.LayoutOrder = 12
 
-    -- botão DETECTAR: captura a próxima tecla pressionada e preenche keyBox
     local detectConn = nil
-    local detectBtn = SettingsLib:Create("TextButton", {
-        Parent            = kbAddItem,
-        BackgroundColor3  = Color3.fromRGB(80, 80, 80),
-        Position          = UDim2.new(1, -290, 0.5, -12),
-        Size              = UDim2.new(0, 65, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "DETECTAR",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 9,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
     local keyBox = SettingsLib:Create("TextBox", {
-        Parent              = kbAddItem,
+        Parent              = kbKeyItem,
         BackgroundColor3    = Color3.fromRGB(40, 40, 45),
-        Position            = UDim2.new(1, -220, 0.5, -12),
-        Size                = UDim2.new(0, 55, 0, 24),
+        Position            = UDim2.new(1, -185, 0.5, -12),
+        Size                = UDim2.new(0, 90, 0, 24),
         Font                = Enum.Font.Gotham,
         Text                = "",
-        PlaceholderText     = "Tecla",
+        PlaceholderText     = "tecla",
         TextColor3          = Color3.new(1, 1, 1),
         TextSize            = 11,
         ClearTextOnFocus    = false,
+    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
+    local detectBtn = SettingsLib:Create("TextButton", {
+        Parent            = kbKeyItem,
+        BackgroundColor3  = Color3.fromRGB(80, 80, 80),
+        Position          = UDim2.new(1, -90, 0.5, -12),
+        Size              = UDim2.new(0, 80, 0, 24),
+        Font              = Enum.Font.GothamBold,
+        Text              = "DETECTAR",
+        TextColor3        = Color3.new(1, 1, 1),
+        TextSize          = 10,
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
     detectBtn.MouseButton1Click:Connect(function()
@@ -10095,15 +10107,12 @@ task.spawn(function()
             detectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
             return
         end
-
         detectBtn.Text = "APERTE..."
         detectBtn.BackgroundColor3 = Color3.fromRGB(200, 130, 0)
-
         detectConn = UserInputService.InputBegan:Connect(function(input, gp)
             if gp then return end
             if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
             if input.KeyCode == Enum.KeyCode.Unknown or input.KeyCode == Enum.KeyCode.Escape then return end
-
             keyBox.Text = input.KeyCode.Name
             detectConn:Disconnect()
             detectConn = nil
@@ -10112,11 +10121,15 @@ task.spawn(function()
         end)
     end)
 
+    -- ── LINHA 2: Emote ID + PEGAR + SALVAR ──
+    local kbIdItem = SettingsLib.AddItem(ExtrasTab, "Keybind › Emote ID", "Cole o ID (deixe vazio para remover a keybind) — PEGAR copia o emote atual")
+    kbIdItem.LayoutOrder = 13
+
     local idBox = SettingsLib:Create("TextBox", {
-        Parent              = kbAddItem,
+        Parent              = kbIdItem,
         BackgroundColor3    = Color3.fromRGB(40, 40, 45),
-        Position            = UDim2.new(1, -160, 0.5, -12),
-        Size                = UDim2.new(0, 65, 0, 24),
+        Position            = UDim2.new(1, -285, 0.5, -12),
+        Size                = UDim2.new(0, 100, 0, 24),
         Font                = Enum.Font.Gotham,
         Text                = "",
         PlaceholderText     = "Emote ID",
@@ -10125,8 +10138,19 @@ task.spawn(function()
         ClearTextOnFocus    = false,
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
+    local getBtn = SettingsLib:Create("TextButton", {
+        Parent            = kbIdItem,
+        BackgroundColor3  = Color3.fromRGB(60, 130, 220),
+        Position          = UDim2.new(1, -180, 0.5, -12),
+        Size              = UDim2.new(0, 80, 0, 24),
+        Font              = Enum.Font.GothamBold,
+        Text              = "PEGAR",
+        TextColor3        = Color3.new(1, 1, 1),
+        TextSize          = 11,
+    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
     local kbAddBtn = SettingsLib:Create("TextButton", {
-        Parent            = kbAddItem,
+        Parent            = kbIdItem,
         BackgroundColor3  = Color3.fromRGB(0, 200, 100),
         Position          = UDim2.new(1, -90, 0.5, -12),
         Size              = UDim2.new(0, 80, 0, 24),
@@ -10136,8 +10160,18 @@ task.spawn(function()
         TextSize          = 11,
     }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
+    getBtn.MouseButton1Click:Connect(function()
+        local id = getPlayingEmoteId(game.Players.LocalPlayer)
+        if not id then
+            getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ Nenhum emote tocando agora", Duration=3})
+            return
+        end
+        idBox.Text = tostring(id)
+        pcall(function() setclipboard(tostring(id)) end)
+        getgenv().Notify({Title="hyaprojmodified | Keybind", Content="📋 ID " .. tostring(id) .. " copiado e no campo", Duration=3})
+    end)
+
     kbAddBtn.MouseButton1Click:Connect(function()
-        -- cancela detecção pendente se clicar SALVAR enquanto aguarda tecla
         if detectConn then
             detectConn:Disconnect()
             detectConn = nil
@@ -10151,7 +10185,6 @@ task.spawn(function()
             return
         end
         if id == "" then
-            -- remove o keybind
             HyaExt.SetKeybind(key, nil)
         else
             if not tonumber(id) then
@@ -10162,31 +10195,6 @@ task.spawn(function()
         end
         keyBox.Text = ""
         idBox.Text  = ""
-    end)
-
-    -- ── PEGAR ID do emote que está tocando ──
-    local getItem = SettingsLib.AddItem(ExtrasTab, "Pegar ID do emote tocando", "Toque um emote no menu e clique PEGAR: o ID vai para o campo Emote ID")
-    getItem.LayoutOrder = 13
-    local getBtn = SettingsLib:Create("TextButton", {
-        Parent            = getItem,
-        BackgroundColor3  = Color3.fromRGB(60, 130, 220),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "PEGAR",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-    getBtn.MouseButton1Click:Connect(function()
-        local id = getPlayingEmoteId(game.Players.LocalPlayer)
-        if not id then
-            getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ Nenhum emote tocando agora", Duration=3})
-            return
-        end
-        idBox.Text = tostring(id)
-        pcall(function() setclipboard(tostring(id)) end)
-        getgenv().Notify({Title="hyaprojmodified | Keybind", Content="📋 ID " .. tostring(id) .. " no campo (e copiado)", Duration=3})
     end)
 end)
 
