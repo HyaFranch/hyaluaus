@@ -9555,19 +9555,39 @@ function HyaExt.SaveCamSlot(slot)
         })
         return false
     end
-    HyaExt.CamSlots[slot] = packCF(root.CFrame:ToObjectSpace(cam.CFrame))
+    HyaExt.CamSlots[slot] = {
+        cf          = packCF(root.CFrame:ToObjectSpace(cam.CFrame)),
+        camHead     = HyaExt.CamHeadEnabled and true or false,
+        camHeadSpeed = HyaExt.CamHeadSpeed or 10,
+    }
     hyaSave()
+    local headInfo = HyaExt.CamHeadEnabled and " + CamHead (speed " .. tostring(HyaExt.CamHeadSpeed or 10) .. ")" or ""
     getgenv().Notify({
         Title   = "hyaprojmodified | CamSave",
-        Content = "💾 Câmera salva no slot " .. slot,
+        Content = "💾 Câmera salva no slot " .. slot .. headInfo,
         Duration = 2
     })
     return true
 end
 
+-- lê um slot suportando formato antigo (array de 12) e novo ({ cf=..., camHead=... })
+local function readCamSlot(slot)
+    local data = HyaExt.CamSlots[slot]
+    if type(data) ~= "table" then return nil, false, 10 end
+    -- formato antigo: array de 12 números direto
+    if #data == 12 then
+        return unpackCF(data), false, 10
+    end
+    -- formato novo: { cf={...}, camHead=bool, camHeadSpeed=number }
+    local rel   = unpackCF(data.cf)
+    local head  = data.camHead == true
+    local speed = type(data.camHeadSpeed) == "number" and data.camHeadSpeed or 10
+    return rel, head, speed
+end
+
 function HyaExt.UseCamSlot(slot)
     slot = tostring(slot)
-    local rel = unpackCF(HyaExt.CamSlots[slot])
+    local rel, savedHead, savedSpeed = readCamSlot(slot)
     if not rel then
         getgenv().Notify({
             Title   = "hyaprojmodified | CamSave",
@@ -9586,9 +9606,20 @@ function HyaExt.UseCamSlot(slot)
     HyaExt.CamFollowStart   = os.clock()
     HyaExt.CamFollowEnabled = true
     camFollowLoop()
+
+    -- restaura CamHead se estava ativo quando o slot foi salvo
+    if savedHead then
+        HyaExt.CamHeadSpeed   = savedSpeed
+        HyaExt.CamHeadAccum   = Vector3.new(0, 0, 0)
+        HyaExt.CamHeadEnabled = true
+        -- CamHead roda dentro do camFollowLoop quando CamFollowEnabled está ativo,
+        -- então não precisa de loop separado aqui.
+    end
+
+    local headInfo = savedHead and " + CamHead (speed " .. tostring(savedSpeed) .. ")" or ""
     getgenv().Notify({
         Title   = "hyaprojmodified | CamSave",
-        Content = "🎥 Câmera do slot " .. slot .. " ativada (acompanha o boneco)",
+        Content = "🎥 Câmera do slot " .. slot .. " ativada" .. headInfo,
         Duration = 2
     })
     return true
