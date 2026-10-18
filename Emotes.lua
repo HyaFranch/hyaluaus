@@ -8974,35 +8974,7 @@ local function hyaLoad()
 end
 hyaLoad()
 
--- ── HOTKEYS DE CÂMERA + GUI ──────────────────────────────────
---  Chamado depois que a GUI é criada (MainFrame disponível)
-local _HotkeyGuiRef = nil  -- será preenchido com o MainFrame após criar a GUI
-local function rebuildHotkeyConnections()
-    for _, c in ipairs(HyaExt.HotkeyConns) do pcall(function() c:Disconnect() end) end
-    HyaExt.HotkeyConns = {}
-
-    local map = {
-        { key = HyaExt.HotkeyCamLock, fn = function() HyaExt.ToggleCamLock() end },
-        { key = HyaExt.HotkeyCamHead, fn = function() HyaExt.ToggleCamHead() end },
-        { key = HyaExt.HotkeyOpenGui, fn = function()
-            if _HotkeyGuiRef then
-                _HotkeyGuiRef.Visible = not _HotkeyGuiRef.Visible
-            end
-        end },
-    }
-    for _, entry in ipairs(map) do
-        if entry.key and entry.key ~= "" then
-            local kc = findKeyCode(entry.key)
-            if kc then
-                local conn = UserInputService.InputBegan:Connect(function(input, gp)
-                    if gp then return end
-                    if input.KeyCode == kc then task.spawn(entry.fn) end
-                end)
-                table.insert(HyaExt.HotkeyConns, conn)
-            end
-        end
-    end
-end
+local _HotkeyGuiRef = nil  -- preenchido com MainFrame após criar a GUI
 
 -- ── 1. EMOTE SYNC ─────────────────────────────────────────────
 --  Detecta o emote que um player próximo está rodando e
@@ -9773,6 +9745,35 @@ local function rebuildKeybindConnections()
     end
 end
 rebuildKeybindConnections()   -- aplica keybinds salvos
+
+-- ── HOTKEYS DE CÂMERA + GUI ──────────────────────────────────
+--  Definida aqui pois depende de findKeyCode (acima)
+local function rebuildHotkeyConnections()
+    for _, c in ipairs(HyaExt.HotkeyConns) do pcall(function() c:Disconnect() end) end
+    HyaExt.HotkeyConns = {}
+
+    local map = {
+        { key = HyaExt.HotkeyCamLock, fn = function() HyaExt.ToggleCamLock() end },
+        { key = HyaExt.HotkeyCamHead, fn = function() HyaExt.ToggleCamHead() end },
+        { key = HyaExt.HotkeyOpenGui, fn = function()
+            if _HotkeyGuiRef then
+                _HotkeyGuiRef.Visible = not _HotkeyGuiRef.Visible
+            end
+        end },
+    }
+    for _, entry in ipairs(map) do
+        if entry.key and entry.key ~= "" then
+            local kc = findKeyCode(entry.key)
+            if kc then
+                local conn = UserInputService.InputBegan:Connect(function(input, gp)
+                    if gp then return end
+                    if input.KeyCode == kc then task.spawn(entry.fn) end
+                end)
+                table.insert(HyaExt.HotkeyConns, conn)
+            end
+        end
+    end
+end
 
 function HyaExt.SetKeybind(keyName, emoteId)
     keyName = normalizeKeyName(keyName)   -- aceita "1", "Enum.KeyCode.One", "f1", etc.

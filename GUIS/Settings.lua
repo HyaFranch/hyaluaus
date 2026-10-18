@@ -511,21 +511,19 @@ local MainFrame = Lib:Create("Frame", {
 MainFrame.Visible = false
 
 local Dragging, DragStart, StartPos
-MainFrame.InputBegan:Connect(function(input, gameProcessed)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        -- só inicia drag se o input foi no Header (barra de título), não nos conteúdos/scroll
-        local pos = input.Position
-        local absPos = MainFrame.AbsolutePosition
-        local headerBottom = absPos.Y + 60  -- altura do Header
-        if pos.Y > headerBottom then return end
-        Dragging = true
-        DragStart = pos
-        StartPos = MainFrame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then Dragging = false end
-        end)
-    end
-end)
+-- drag só no Header para não engolir o scroll das abas
+local function setupDrag(handle)
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            Dragging = true
+            DragStart = input.Position
+            StartPos = MainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then Dragging = false end
+            end)
+        end
+    end)
+end
 UserInputService.InputChanged:Connect(function(input)
     if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and Dragging then
         local Delta = (input.Position - DragStart) / UIScale.Scale
@@ -576,6 +574,7 @@ local CloseBtn = Lib:Create("TextButton", {
 CloseBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = false
 end)
+setupDrag(Header)
 
 local TabContainers = {}
 local ActiveTab = nil
