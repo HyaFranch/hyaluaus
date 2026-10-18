@@ -8932,6 +8932,11 @@ HyaExt.CamFollowStart   = 0
 HyaExt.CamFollowRotate  = false   -- false: só acompanha posição | true: gira junto com o boneco
 HyaExt.Keybinds     = {}           -- { [KeyName] = emoteId }
 HyaExt.KeybindConns = {}
+-- Hotkeys de câmera
+HyaExt.HotkeyCamLock  = ""   -- tecla para toggle CamLock
+HyaExt.HotkeyCamHead  = ""   -- tecla para toggle CamHead
+HyaExt.HotkeyOpenGui  = "Quote"  -- tecla para abrir/fechar configs (padrão = ')
+HyaExt.HotkeyConns    = {}
 HyaExt.ConfigPath   = "hyaprojmodified/ExtConfig.json"
 
 -- ── helpers ──────────────────────────────────────────────────
@@ -8939,10 +8944,13 @@ local function hyaSave()
     pcall(function()
         if not isfolder("hyaprojmodified") then makefolder("hyaprojmodified") end
         writefile(HyaExt.ConfigPath, HttpService:JSONEncode({
-            Keybinds  = HyaExt.Keybinds,
-            CamLocked = false,  -- never save as locked
-            CamSlots  = HyaExt.CamSlots,
-            CamFollowRotate = HyaExt.CamFollowRotate
+            Keybinds        = HyaExt.Keybinds,
+            CamLocked       = false,
+            CamSlots        = HyaExt.CamSlots,
+            CamFollowRotate = HyaExt.CamFollowRotate,
+            HotkeyCamLock   = HyaExt.HotkeyCamLock,
+            HotkeyCamHead   = HyaExt.HotkeyCamHead,
+            HotkeyOpenGui   = HyaExt.HotkeyOpenGui
         }))
     end)
 end
@@ -8955,13 +8963,46 @@ local function hyaLoad()
             end)
             if ok and type(d) == "table" then
                 HyaExt.Keybinds = d.Keybinds or {}
-                if type(d.CamSlots) == "table" then HyaExt.CamSlots = d.CamSlots end
+                if type(d.CamSlots)        == "table"   then HyaExt.CamSlots        = d.CamSlots        end
                 if type(d.CamFollowRotate) == "boolean" then HyaExt.CamFollowRotate = d.CamFollowRotate end
+                if type(d.HotkeyCamLock)   == "string"  then HyaExt.HotkeyCamLock   = d.HotkeyCamLock   end
+                if type(d.HotkeyCamHead)   == "string"  then HyaExt.HotkeyCamHead   = d.HotkeyCamHead   end
+                if type(d.HotkeyOpenGui)   == "string"  then HyaExt.HotkeyOpenGui   = d.HotkeyOpenGui   end
             end
         end
     end)
 end
 hyaLoad()
+
+-- ── HOTKEYS DE CÂMERA + GUI ──────────────────────────────────
+--  Chamado depois que a GUI é criada (MainFrame disponível)
+local _HotkeyGuiRef = nil  -- será preenchido com o MainFrame após criar a GUI
+local function rebuildHotkeyConnections()
+    for _, c in ipairs(HyaExt.HotkeyConns) do pcall(function() c:Disconnect() end) end
+    HyaExt.HotkeyConns = {}
+
+    local map = {
+        { key = HyaExt.HotkeyCamLock, fn = function() HyaExt.ToggleCamLock() end },
+        { key = HyaExt.HotkeyCamHead, fn = function() HyaExt.ToggleCamHead() end },
+        { key = HyaExt.HotkeyOpenGui, fn = function()
+            if _HotkeyGuiRef then
+                _HotkeyGuiRef.Visible = not _HotkeyGuiRef.Visible
+            end
+        end },
+    }
+    for _, entry in ipairs(map) do
+        if entry.key and entry.key ~= "" then
+            local kc = findKeyCode(entry.key)
+            if kc then
+                local conn = UserInputService.InputBegan:Connect(function(input, gp)
+                    if gp then return end
+                    if input.KeyCode == kc then task.spawn(entry.fn) end
+                end)
+                table.insert(HyaExt.HotkeyConns, conn)
+            end
+        end
+    end
+end
 
 -- ── 1. EMOTE SYNC ─────────────────────────────────────────────
 --  Detecta o emote que um player próximo está rodando e
@@ -10196,6 +10237,96 @@ task.spawn(function()
         keyBox.Text = ""
         idBox.Text  = ""
     end)
+
+    -- ── HOTKEYS DE CÂMERA ──
+    -- helper local para criar uma linha de hotkey (label + campo + DETECTAR + SALVAR)
+    local function makeCamHotkeyRow(order, label, desc, getCurrent, setCurrent)
+        local item = SettingsLib.AddItem(ExtrasTab, label, desc)
+        item.LayoutOrder = order
+
+        local camDetConn = nil
+
+        local camKeyBox = SettingsLib:Create("TextBox", {
+            Parent              = item,
+            BackgroundColor3    = Color3.fromRGB(40, 40, 45),
+            Position            = UDim2.new(1, -285, 0.5, -12),
+            Size                = UDim2.new(0, 90, 0, 24),
+            Font                = Enum.Font.Gotham,
+            Text                = getCurrent(),
+            PlaceholderText     = "tecla",
+            TextColor3          = Color3.new(1, 1, 1),
+            TextSize            = 11,
+            ClearTextOnFocus    = false,
+        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
+        local camDetBtn = SettingsLib:Create("TextButton", {
+            Parent            = item,
+            BackgroundColor3  = Color3.fromRGB(80, 80, 80),
+            Position          = UDim2.new(1, -190, 0.5, -12),
+            Size              = UDim2.new(0, 90, 0, 24),
+            Font              = Enum.Font.GothamBold,
+            Text              = "DETECTAR",
+            TextColor3        = Color3.new(1, 1, 1),
+            TextSize          = 10,
+        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
+        local camSaveBtn = SettingsLib:Create("TextButton", {
+            Parent            = item,
+            BackgroundColor3  = Color3.fromRGB(0, 160, 100),
+            Position          = UDim2.new(1, -90, 0.5, -12),
+            Size              = UDim2.new(0, 80, 0, 24),
+            Font              = Enum.Font.GothamBold,
+            Text              = "SALVAR",
+            TextColor3        = Color3.fromRGB(20, 20, 20),
+            TextSize          = 11,
+        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+
+        local function stopDet()
+            if camDetConn then
+                camDetConn:Disconnect()
+                camDetConn = nil
+                camDetBtn.Text = "DETECTAR"
+                camDetBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            end
+        end
+
+        camDetBtn.MouseButton1Click:Connect(function()
+            if camDetConn then stopDet() return end
+            camDetBtn.Text = "APERTE..."
+            camDetBtn.BackgroundColor3 = Color3.fromRGB(200, 130, 0)
+            camDetConn = UserInputService.InputBegan:Connect(function(input, gp)
+                if gp then return end
+                if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+                if input.KeyCode == Enum.KeyCode.Unknown or input.KeyCode == Enum.KeyCode.Escape then
+                    stopDet() return
+                end
+                camKeyBox.Text = input.KeyCode.Name
+                stopDet()
+            end)
+        end)
+
+        camSaveBtn.MouseButton1Click:Connect(function()
+            stopDet()
+            local val = camKeyBox.Text:gsub("%s", "")
+            setCurrent(val)
+            rebuildHotkeyConnections()
+            hyaSave()
+            local display = val ~= "" and ("[" .. val .. "]") or "(nenhuma)"
+            getgenv().Notify({Title="hyaprojmodified | Hotkey", Content="⌨️ " .. label .. " → " .. display, Duration=2})
+        end)
+    end
+
+    -- Separador visual
+    local camHkTitle = SettingsLib.AddItem(ExtrasTab, "Hotkeys de Câmera", "Teclas de atalho para CamLock e CamHead (deixe vazio para desativar)")
+    camHkTitle.LayoutOrder = 14
+
+    makeCamHotkeyRow(15, "Hotkey › CamLock",  "Toggle do CamLock",         function() return HyaExt.HotkeyCamLock end,  function(v) HyaExt.HotkeyCamLock  = v end)
+    makeCamHotkeyRow(16, "Hotkey › CamHead",  "Toggle do CamHead",         function() return HyaExt.HotkeyCamHead end,  function(v) HyaExt.HotkeyCamHead  = v end)
+    makeCamHotkeyRow(17, "Hotkey › Abrir GUI","Abre/fecha a janela de configs (padrão: ')", function() return HyaExt.HotkeyOpenGui end, function(v) HyaExt.HotkeyOpenGui = v end)
+
+    -- ativa os hotkeys agora que a GUI está pronta
+    _HotkeyGuiRef = getSettingsMainFrame()
+    rebuildHotkeyConnections()
 end)
 
 -- expõe globalmente para quem quiser chamar via console
