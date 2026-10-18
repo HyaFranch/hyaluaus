@@ -9686,16 +9686,51 @@ function HyaExt.PlayAnimId(hum, animId)
     return false
 end
 
--- 1º tenta como ID de emote do catálogo (o mesmo que o menu usa);
--- se não tocar, tenta como ID de animação (o que o botão PEGAR devolve).
+-- Toca o ID da keybind. O ID pode ser:
+--  (a) ID de emote do catálogo (o mesmo do menu) → só toca se estiver registrado no
+--      HumanoidDescription, que é o que o menu faz antes de tocar. Sem isso o
+--      PlayEmoteAndGetAnimTrackById falha e o ID acabava carregado como se fosse uma
+--      animação: o track "toca" sem keyframes e o boneco fica parado na pose.
+--  (b) ID de animação (o que o botão PEGAR devolve) → toca direto.
+--  Se nada animar de verdade, converte o emote em ID de animação e tenta de novo.
 local function playKeybindEmote(hum, id)
     local num = tonumber(id)
     if not num then return end
-    if playRandomEmote then
+
+    -- 1) emote do catálogo: registra no HumanoidDescription sem mexer nos emotes do menu
+    local desc = hum:FindFirstChildOfClass("HumanoidDescription")
+    if desc and playRandomEmote then
+        pcall(function()
+            local emotes = desc:GetEmotes()
+            local name = "HyaKeybind_" .. tostring(num)
+            if emotes[name] == nil then
+                emotes[name] = { num }
+                desc:SetEmotes(emotes)
+            end
+        end)
         pcall(playRandomEmote, hum, num)
         if State.currentEmoteTrack then return end
     end
-    HyaExt.PlayAnimId(hum, num)
+
+    -- 2) ID de animação direto, conferindo se o track tem frames de verdade
+    if HyaExt.PlayAnimId(hum, num) then
+        local track = State.currentEmoteTrack
+        if track then
+            task.wait(0.2)
+            if track.Length > 0 then return end
+            pcall(function() track:Stop() end)
+            pcall(function() track:Destroy() end)
+            if State.currentEmoteTrack == track then State.currentEmoteTrack = nil end
+        end
+    end
+
+    -- 3) converte o emote do catálogo no ID da animação real e toca
+    local animId = resolveEmoteToAnimationId and resolveEmoteToAnimationId(num)
+    if animId and animId ~= num then
+        HyaExt.PlayAnimId(hum, animId)
+    else
+        getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "❌ Não consegui tocar o ID " .. tostring(num), Duration = 3 })
+    end
 end
 
 -- Busca KeyCode aceitando: "1"→One, "F1"→F1, "Enum.KeyCode.One"→One
