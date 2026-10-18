@@ -624,6 +624,68 @@ function Components:AddItem(parent, title, description)
     return ItemContainer
 end
 
+-- Layout alternativo: linha de cima = título + controles (altura fixa 40px),
+-- linha de baixo = descrição (wrap automático). Controles filhos devem usar
+-- Position relativa ao item normalmente; o título ocupa só a metade esquerda.
+function Components:AddItemTwoRow(parent, title, description)
+    local ItemContainer = Lib:Create("Frame", {
+        Name = title,
+        Parent = parent,
+        BackgroundColor3 = Theme.Section,
+        Size = UDim2.new(0.95, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+    }, {
+        Lib:Create("UICorner", {CornerRadius = UDim.new(0, 10)}),
+        Lib:Create("UIPadding", {
+            PaddingTop    = UDim.new(0, 0),
+            PaddingBottom = UDim.new(0, 10),
+            PaddingLeft   = UDim.new(0, 0),
+            PaddingRight  = UDim.new(0, 0),
+        }),
+    })
+    -- faixa de cima: título à esquerda, controles filhos à direita (height 40)
+    local TopRow = Lib:Create("Frame", {
+        Name = "TopRow",
+        Parent = ItemContainer,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 0, 0, 0),
+        Size = UDim2.new(1, 0, 0, 40),
+    })
+    Lib:Create("TextLabel", {
+        Name = "Title",
+        Parent = TopRow,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(0.45, 0, 1, 0),
+        Font = Theme.FontBold,
+        Text = title,
+        TextColor3 = Theme.Text,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    })
+    -- descrição embaixo da faixa de cima
+    if description and description ~= "" then
+        Lib:Create("TextLabel", {
+            Name = "Desc",
+            Parent = ItemContainer,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 12, 0, 42),
+            Size = UDim2.new(1, -24, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            TextWrapped = true,
+            Font = Theme.FontRegular,
+            Text = description,
+            TextColor3 = Theme.TextDim,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+        })
+    end
+    -- retorna TopRow como parent dos controles, e ItemContainer para LayoutOrder
+    return TopRow, ItemContainer
+end
+
 function Components:AddToggle(container, title, description, default, callback)
     local item = self:AddItem(container, title, description)
     local state = default or false
@@ -1180,6 +1242,7 @@ local Library = {
     AddIconButton = function(...) return Components:AddIconButton(...) end,
     AddFolder = function(...) return Components:AddFolder(...) end,
     AddItem = function(...) return Components:AddItem(...) end,
+    AddItemTwoRow = function(...) return Components:AddItemTwoRow(...) end,
     AddInputWithColor = function(...) return Components:AddInputWithColor(...) end,
     AddAssetColor = function(...) return Components:AddAssetColor(...) end,
     OpenPicker = function(...) return Lib:OpenPicker(...) end,
