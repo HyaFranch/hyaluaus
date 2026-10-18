@@ -8930,9 +8930,8 @@ HyaExt.CamFollowOffset  = nil     -- CFrame relativo ao boneco
 HyaExt.CamFollowBaseRot = nil     -- rotação do boneco no momento do USAR (modo fixo)
 HyaExt.CamFollowStart   = 0
 HyaExt.CamFollowRotate  = false   -- false: só acompanha posição | true: gira junto com o boneco
-HyaExt.Keybinds      = {}           -- { [KeyName] = emoteId }
-HyaExt.KeybindConns  = {}
-HyaExt.ActiveKeybind = nil          -- keyName da keybind atualmente tocando
+HyaExt.Keybinds     = {}           -- { [KeyName] = emoteId }
+HyaExt.KeybindConns = {}
 -- Hotkeys de câmera
 HyaExt.HotkeyCamLock  = ""   -- tecla para toggle CamLock
 HyaExt.HotkeyCamHead  = ""   -- tecla para toggle CamHead
@@ -9772,13 +9771,11 @@ local function rebuildKeybindConnections()
             local conn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
                 if gameProcessed or HyaExt.Capturing then return end
                 if input.KeyCode == enumKey then
-                    -- Toggle: se esta keybind já está ativa, para o emote e volta ao normal
-                    if HyaExt.ActiveKeybind == keyName then
-                        HyaExt.ActiveKeybind = nil
-                        if State.currentEmoteTrack then
-                            pcall(function() State.currentEmoteTrack:Stop() end)
-                            State.currentEmoteTrack = nil
-                        end
+                    -- Toggle: se há emote tocando, para; caso contrário, toca
+                    local trackPlaying = State.currentEmoteTrack and State.currentEmoteTrack.IsPlaying
+                    if trackPlaying then
+                        pcall(function() State.currentEmoteTrack:Stop() end)
+                        State.currentEmoteTrack = nil
                         pcall(stopEmotes)
                         return
                     end
@@ -9787,7 +9784,6 @@ local function rebuildKeybindConnections()
                     local char = lp and lp.Character
                     local hum  = char and char:FindFirstChildOfClass("Humanoid")
                     if hum then
-                        HyaExt.ActiveKeybind = keyName
                         task.spawn(function()
                             playKeybindEmote(hum, emoteId)
                         end)
