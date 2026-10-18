@@ -8937,6 +8937,9 @@ HyaExt.HotkeyCamLock  = ""   -- tecla para toggle CamLock
 HyaExt.HotkeyCamHead  = ""   -- tecla para toggle CamHead
 HyaExt.HotkeyOpenGui  = "Quote"  -- tecla para abrir/fechar configs (padrão = ')
 HyaExt.HotkeyConns    = {}
+HyaExt.HotkeyCamSlots = {}   -- { ["1"] = "F1", ... } tecla que liga/desliga cada Cam Salva
+HyaExt.Capturing      = false -- true enquanto o DETECTAR espera uma tecla (pausa todos os atalhos)
+HyaExt.OnKeybindsChanged = nil -- callback da UI: redesenha a lista de keybinds
 HyaExt.ConfigPath   = "hyaprojmodified/ExtConfig.json"
 
 -- ── helpers ──────────────────────────────────────────────────
@@ -8950,7 +8953,8 @@ local function hyaSave()
             CamFollowRotate = HyaExt.CamFollowRotate,
             HotkeyCamLock   = HyaExt.HotkeyCamLock,
             HotkeyCamHead   = HyaExt.HotkeyCamHead,
-            HotkeyOpenGui   = HyaExt.HotkeyOpenGui
+            HotkeyOpenGui   = HyaExt.HotkeyOpenGui,
+            HotkeyCamSlots  = HyaExt.HotkeyCamSlots
         }))
     end)
 end
@@ -8968,6 +8972,7 @@ local function hyaLoad()
                 if type(d.HotkeyCamLock)   == "string"  then HyaExt.HotkeyCamLock   = d.HotkeyCamLock   end
                 if type(d.HotkeyCamHead)   == "string"  then HyaExt.HotkeyCamHead   = d.HotkeyCamHead   end
                 if type(d.HotkeyOpenGui)   == "string"  then HyaExt.HotkeyOpenGui   = d.HotkeyOpenGui   end
+                if type(d.HotkeyCamSlots)  == "table"   then HyaExt.HotkeyCamSlots  = d.HotkeyCamSlots  end
             end
         end
     end)
@@ -9728,7 +9733,7 @@ local function rebuildKeybindConnections()
         local enumKey = findKeyCode(keyName)
         if enumKey then
             local conn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-                if gameProcessed then return end
+                if gameProcessed or HyaExt.Capturing then return end
                 if input.KeyCode == enumKey then
                     local lp   = game.Players.LocalPlayer
                     local char = lp and lp.Character
@@ -9746,54 +9751,190 @@ local function rebuildKeybindConnections()
 end
 rebuildKeybindConnections()   -- aplica keybinds salvos
 
--- ── HOTKEYS DE CÂMERA + GUI ──────────────────────────────────
---  Definida aqui pois depende de findKeyCode (acima)
+-- ── HOTKEYS (CamLock, CamHead, Abrir GUI, Cam Salva 1..N) ────
+--  As funções ficam dentro de HyaExt (e não como locals) para não
+--  estourar o limite de 200 variáveis locais do chunk principal.
+HyaExt.HotkeyLabels = { CamLock = "CamLock", CamHead = "CamHead", OpenGui = "Abrir GUI" }
+
+function HyaExt.HotkeyLabel(id)
+    if HyaExt.HotkeyLabels[id] then return HyaExt.HotkeyLabels[id] end
+    local n = tostring(id):match("^Cam(%d+)$")
+    return n and ("Cam " .. n) or tostring(id)
+end
+
+function HyaExt.GetHotkey(id)
+    if id == "CamLock" then return HyaExt.HotkeyCamLock or "" end
+    if id == "CamHead" then return HyaExt.HotkeyCamHead or "" end
+    if id == "OpenGui" then return HyaExt.HotkeyOpenGui or "" end
+    local n = tostring(id):match("^Cam(%d+)$")
+    if n then return HyaExt.HotkeyCamSlots[n] or "" end
+    return ""
+end
+
+function HyaExt.AllHotkeys()
+    local list = {}
+    for _, id in ipairs({ "CamLock", "CamHead", "OpenGui" }) do
+        table.insert(list, { id = id, key = HyaExt.GetHotkey(id) })
+    end
+    for i = 1, HyaExt.CamSlotCount do
+        local id = "Cam" .. i
+        table.insert(list, { id = id, key = HyaExt.GetHotkey(id) })
+    end
+    return list
+end
+
+-- devolve o nome da função que já usa essa tecla (ou nil se estiver livre)
+function HyaExt.FindKeyConflict(kc, ignoreHotkey, ignoreKeybind)
+    for _, h in ipairs(HyaExt.AllHotkeys()) do
+        if h.id ~= ignoreHotkey and h.key ~= "" and findKeyCode(h.key) == kc then
+            return HyaExt.HotkeyLabel(h.id)
+        end
+    end
+    for keyName, emoteId in pairs(HyaExt.Keybinds) do
+        if keyName ~= ignoreKeybind and findKeyCode(keyName) == kc then
+            return "keybind do emote " .. tostring(emoteId)
+        end
+    end
+    return nil
+end
+
 local function rebuildHotkeyConnections()
     for _, c in ipairs(HyaExt.HotkeyConns) do pcall(function() c:Disconnect() end) end
     HyaExt.HotkeyConns = {}
 
-    local map = {
-        { key = HyaExt.HotkeyCamLock, fn = function() HyaExt.ToggleCamLock() end },
-        { key = HyaExt.HotkeyCamHead, fn = function() HyaExt.ToggleCamHead() end },
-        { key = HyaExt.HotkeyOpenGui, fn = function()
+    local actions = {
+        CamLock = function() HyaExt.ToggleCamLock() end,
+        CamHead = function() HyaExt.ToggleCamHead() end,
+        OpenGui = function()
             if _HotkeyGuiRef then
                 _HotkeyGuiRef.Visible = not _HotkeyGuiRef.Visible
             end
-        end },
+        end,
     }
-    for _, entry in ipairs(map) do
-        if entry.key and entry.key ~= "" then
-            local kc = findKeyCode(entry.key)
-            if kc then
-                local conn = UserInputService.InputBegan:Connect(function(input, gp)
-                    if gp then return end
-                    if input.KeyCode == kc then task.spawn(entry.fn) end
-                end)
-                table.insert(HyaExt.HotkeyConns, conn)
-            end
+    for i = 1, HyaExt.CamSlotCount do
+        actions["Cam" .. i] = function() HyaExt.ToggleCamSlot(i) end
+    end
+
+    -- uma única conexão com tabela tecla → ação
+    local map = {}
+    for _, h in ipairs(HyaExt.AllHotkeys()) do
+        if h.key ~= "" and actions[h.id] then
+            local kc = findKeyCode(h.key)
+            if kc then map[kc] = actions[h.id] end
         end
     end
+    if next(map) == nil then return end
+
+    table.insert(HyaExt.HotkeyConns, UserInputService.InputBegan:Connect(function(input, gp)
+        if gp or HyaExt.Capturing then return end   -- ignora enquanto o DETECTAR está esperando uma tecla
+        local fn = map[input.KeyCode]
+        if fn then task.spawn(fn) end
+    end))
+end
+
+-- define (ou limpa, com "") o atalho de uma ação. Valida a tecla e evita conflito.
+function HyaExt.SetHotkey(id, raw)
+    local text = (tostring(raw or ""):gsub("%s", ""))
+    local val  = ""
+    if text ~= "" then
+        local kc = findKeyCode(text)
+        if not kc then
+            getgenv().Notify({ Title = "hyaprojmodified | Hotkey", Content = "❌ Tecla inválida: " .. text, Duration = 3 })
+            return false
+        end
+        local conflict = HyaExt.FindKeyConflict(kc, id, nil)
+        if conflict then
+            getgenv().Notify({ Title = "hyaprojmodified | Hotkey", Content = "⚠️ [" .. kc.Name .. "] já está em uso: " .. conflict, Duration = 3 })
+            return false
+        end
+        val = kc.Name
+    end
+
+    if id == "CamLock" then HyaExt.HotkeyCamLock = val
+    elseif id == "CamHead" then HyaExt.HotkeyCamHead = val
+    elseif id == "OpenGui" then HyaExt.HotkeyOpenGui = val
+    else
+        local n = tostring(id):match("^Cam(%d+)$")
+        if not n then return false end
+        HyaExt.HotkeyCamSlots[n] = (val ~= "") and val or nil
+    end
+
+    rebuildHotkeyConnections()
+    hyaSave()
+    getgenv().Notify({
+        Title    = "hyaprojmodified | Hotkey",
+        Content  = "⌨️ " .. HyaExt.HotkeyLabel(id) .. " → " .. (val ~= "" and ("[" .. val .. "]") or "(nenhuma)"),
+        Duration = 2
+    })
+    return true
 end
 
 function HyaExt.SetKeybind(keyName, emoteId)
-    keyName = normalizeKeyName(keyName)   -- aceita "1", "Enum.KeyCode.One", "f1", etc.
+    local name = normalizeKeyName(keyName)   -- aceita "1", "Enum.KeyCode.One", "f1", etc.
+    local kc   = findKeyCode(keyName)
     if emoteId == nil or emoteId == "" then
-        HyaExt.Keybinds[keyName] = nil
+        HyaExt.Keybinds[name] = nil
         getgenv().Notify({
             Title   = "hyaprojmodified | Keybind",
-            Content = "🗑 Keybind [" .. keyName .. "] removida",
+            Content = "🗑 Keybind [" .. name .. "] removida",
             Duration = 2
         })
     else
-        HyaExt.Keybinds[keyName] = tostring(emoteId)
+        if not kc then
+            getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "❌ Tecla inválida: " .. tostring(keyName), Duration = 3 })
+            return false
+        end
+        local conflict = HyaExt.FindKeyConflict(kc, nil, name)
+        if conflict then
+            getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "⚠️ [" .. kc.Name .. "] já está em uso: " .. conflict, Duration = 3 })
+            return false
+        end
+        HyaExt.Keybinds[name] = tostring(emoteId)
         getgenv().Notify({
             Title   = "hyaprojmodified | Keybind",
-            Content = "⌨️ [" .. keyName .. "] → emote " .. tostring(emoteId),
+            Content = "⌨️ [" .. name .. "] → emote " .. tostring(emoteId),
             Duration = 2
         })
     end
     rebuildKeybindConnections()
     hyaSave()
+    if HyaExt.OnKeybindsChanged then pcall(HyaExt.OnKeybindsChanged) end
+    return true
+end
+
+-- ── LIMPEZA ──────────────────────────────────────────────────
+function HyaExt.ClearCamSlot(slot)
+    slot = tostring(slot)
+    if HyaExt.CamFollowEnabled and HyaExt.CamFollowSlot == slot then stopAllCamModes() end
+    HyaExt.CamSlots[slot] = nil
+    hyaSave()
+    getgenv().Notify({ Title = "hyaprojmodified | CamSave", Content = "🗑 Cam " .. slot .. " apagada", Duration = 2 })
+end
+
+-- apaga os atalhos de câmera (CamLock, CamHead, Cam 1..N). "Abrir GUI" é mantido
+-- para você não perder o jeito de abrir o menu pelo teclado.
+function HyaExt.ClearAllHotkeys()
+    HyaExt.HotkeyCamLock  = ""
+    HyaExt.HotkeyCamHead  = ""
+    HyaExt.HotkeyCamSlots = {}
+    rebuildHotkeyConnections()
+    hyaSave()
+    getgenv().Notify({ Title = "hyaprojmodified | Hotkey", Content = "🗑 Atalhos de câmera apagados", Duration = 2 })
+end
+
+function HyaExt.ClearAllKeybinds()
+    HyaExt.Keybinds = {}
+    rebuildKeybindConnections()
+    hyaSave()
+    if HyaExt.OnKeybindsChanged then pcall(HyaExt.OnKeybindsChanged) end
+    getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "🗑 Todas as keybinds de emote apagadas", Duration = 2 })
+end
+
+function HyaExt.ClearAllCamSlots()
+    stopAllCamModes()
+    HyaExt.CamSlots = {}
+    hyaSave()
+    getgenv().Notify({ Title = "hyaprojmodified | CamSave", Content = "🗑 Todas as cams salvas apagadas", Duration = 2 })
 end
 
 function HyaExt.ListKeybinds()
@@ -9810,70 +9951,346 @@ function HyaExt.ListKeybinds()
 end
 
 -- ── 4. GUI – aba "Extras" nas Settings ───────────────────────
---  Adiciona controles visuais para as 3 features acima.
+--  Layout em cards: título + descrição em cima e os controles numa
+--  linha própria embaixo (nada de texto escondido atrás de botão).
+--  Tudo usa UIListLayout, então nada se sobrepõe em tela pequena.
 -- ─────────────────────────────────────────────────────────────
 task.spawn(function()
     task.wait(1)  -- aguarda SettingsLib carregar
     if not SettingsLib then return end
 
-    local ExtrasTab = SettingsLib.CreateTab("Extras", 99)
+    local TweenService = game:GetService("TweenService")
+    local FAST = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
-    -- atualiza todos os botões de câmera de uma vez (os modos são exclusivos)
-    local refreshers = {}
-    local function refreshCamButtons()
+    local C = {
+        Card     = Color3.fromRGB(32, 34, 38),
+        Field    = Color3.fromRGB(21, 22, 25),
+        Stroke   = Color3.fromRGB(58, 61, 68),
+        Text     = Color3.fromRGB(245, 245, 247),
+        Dim      = Color3.fromRGB(140, 144, 152),
+        Neutral  = Color3.fromRGB(58, 61, 68),
+        Accent   = Color3.fromRGB(0, 220, 130),
+        OnAccent = Color3.fromRGB(10, 18, 14),
+        Blue     = Color3.fromRGB(64, 128, 232),
+        Purple   = Color3.fromRGB(128, 84, 220),
+        Red      = Color3.fromRGB(226, 72, 72),
+        Amber    = Color3.fromRGB(232, 150, 24),
+    }
+
+    local function mk(class, props, children) return SettingsLib:Create(class, props, children) end
+    local function corner(r) return mk("UICorner", { CornerRadius = UDim.new(0, r) }) end
+    local function hex(c)
+        return string.format("#%02x%02x%02x", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+    end
+
+    local ExtrasTab = SettingsLib.CreateTab("Extras", 99)
+    mk("UIPadding", { Parent = ExtrasTab, PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 12), PaddingRight = UDim.new(0, 4) })
+
+    local layoutN = 0
+    local function nextOrder()
+        layoutN += 1
+        return layoutN
+    end
+
+    local refreshers = {}      -- atualizam estado (botões ligados/desligados, pills)
+    local function refreshAll()
         for _, f in ipairs(refreshers) do pcall(f) end
     end
 
-    -- ── EMOTE SYNC ──
-    local syncItem = SettingsLib.AddItem(ExtrasTab, "Emote Sync", "Nick = sincroniza com esse player | Vazio = mais próximo (<40 studs)")
-    syncItem.LayoutOrder = 1
+    -- ══════════════ componentes ══════════════
 
-    local nickBox = SettingsLib:Create("TextBox", {
-        Parent           = syncItem,
-        BackgroundColor3 = Color3.fromRGB(40, 40, 45),
-        Position         = UDim2.new(1, -185, 0.5, -12),
-        Size             = UDim2.new(0, 90, 0, 24),
-        Font             = Enum.Font.Gotham,
-        Text             = "",
-        PlaceholderText  = "nick (opcional)",
-        TextColor3       = Color3.new(1, 1, 1),
-        TextSize         = 10,
-        ClearTextOnFocus = false,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+    local function section(text)
+        local f = mk("Frame", { Parent = ExtrasTab, BackgroundTransparency = 1, Size = UDim2.new(1, -4, 0, 20), LayoutOrder = nextOrder() })
+        mk("Frame", { Parent = f, BackgroundColor3 = C.Accent, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 2, 0.5, 0), Size = UDim2.fromOffset(3, 12) }, { corner(2) })
+        mk("TextLabel", {
+            Parent = f, BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -12, 1, 0),
+            Font = Enum.Font.GothamBold, Text = text:upper(), TextColor3 = C.Text, TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
+        return f
+    end
 
-    local syncBtn = SettingsLib:Create("TextButton", {
-        Parent            = syncItem,
-        BackgroundColor3  = Color3.fromRGB(0, 180, 120),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "SYNC",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+    local function note(text)
+        return mk("TextLabel", {
+            Parent = ExtrasTab, BackgroundTransparency = 1, Size = UDim2.new(1, -4, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            Font = Enum.Font.Gotham, Text = text, TextColor3 = C.Dim, TextSize = 11, TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = nextOrder(),
+        }, { mk("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }) })
+    end
 
-    local function refreshSyncBtn()
-        if HyaExt.SyncHeartbeat then
-            syncBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-            syncBtn.Text = "STOP"
-        else
-            syncBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 120)
-            syncBtn.Text = "SYNC"
+    -- card: cabeçalho (título + slot à direita) / descrição / linhas de controles
+    local function card(title, desc)
+        local frame = mk("Frame", {
+            Parent = ExtrasTab, BackgroundColor3 = C.Card, BorderSizePixel = 0,
+            Size = UDim2.new(1, -4, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = nextOrder(),
+        }, {
+            corner(12),
+            mk("UIStroke", { Color = C.Stroke, Thickness = 1, Transparency = 0.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+            mk("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12), PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }),
+            mk("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }),
+        })
+        local header = mk("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20), LayoutOrder = 1 })
+        mk("TextLabel", {
+            Parent = header, BackgroundTransparency = 1, Size = UDim2.new(1, -90, 1, 0),
+            Font = Enum.Font.GothamBold, Text = title, TextColor3 = C.Text, TextSize = 13,
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+        })
+        if desc and desc ~= "" then
+            mk("TextLabel", {
+                Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+                Font = Enum.Font.Gotham, Text = desc, TextColor3 = C.Dim, TextSize = 11, TextWrapped = true,
+                TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = 2,
+            })
+        end
+        local obj = { Frame = frame, Header = header }
+        local n = 10
+        function obj.Row(height)
+            n += 1
+            return mk("Frame", { Parent = frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, height or 34), LayoutOrder = n })
+        end
+        return obj
+    end
+
+    -- distribui os itens de uma linha: w = largura fixa; sem w = ocupa o espaço que sobra
+    local function place(row, items)
+        local gap, fixed, flex = 6, 0, 0
+        for _, it in ipairs(items) do
+            if it.w then fixed += it.w else flex += 1 end
+        end
+        fixed += gap * (#items - 1)
+        mk("UIListLayout", {
+            Parent = row, FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, gap),
+            VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+        for i, it in ipairs(items) do
+            it.inst.LayoutOrder = i
+            it.inst.Parent = row
+            if it.w then
+                it.inst.Size = UDim2.new(0, it.w, 1, 0)
+            else
+                it.inst.Size = UDim2.new(1 / flex, -fixed / flex, 1, 0)
+            end
         end
     end
-    table.insert(refreshers, refreshSyncBtn)
+
+    local function setBtn(b, text, color)
+        b.Text = text
+        b.TextColor3 = (color == C.Accent) and C.OnAccent or C.Text
+        TweenService:Create(b, FAST, { BackgroundColor3 = color }):Play()
+    end
+
+    local function button(text, color)
+        local b = mk("TextButton", {
+            BackgroundColor3 = color, BorderSizePixel = 0, AutoButtonColor = false,
+            Font = Enum.Font.GothamBold, Text = text, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd,
+            TextColor3 = (color == C.Accent) and C.OnAccent or C.Text,
+        }, { corner(8) })
+        b.MouseEnter:Connect(function() TweenService:Create(b, FAST, { BackgroundTransparency = 0.15 }):Play() end)
+        b.MouseLeave:Connect(function() TweenService:Create(b, FAST, { BackgroundTransparency = 0 }):Play() end)
+        b.MouseButton1Down:Connect(function() TweenService:Create(b, FAST, { BackgroundTransparency = 0.35 }):Play() end)
+        b.MouseButton1Up:Connect(function() TweenService:Create(b, FAST, { BackgroundTransparency = 0 }):Play() end)
+        return b
+    end
+
+    local function field(placeholder, text, centered)
+        local box = mk("TextBox", {
+            BackgroundColor3 = C.Field, BorderSizePixel = 0, Font = Enum.Font.GothamMedium,
+            Text = text or "", PlaceholderText = placeholder or "", PlaceholderColor3 = C.Dim,
+            TextColor3 = C.Text, TextSize = 12, ClearTextOnFocus = false, TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = centered and Enum.TextXAlignment.Center or Enum.TextXAlignment.Left,
+        }, {
+            corner(8),
+            mk("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }),
+            mk("UIStroke", { Color = C.Stroke, Thickness = 1, Transparency = 0.3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }),
+        })
+        local stroke = box:FindFirstChildOfClass("UIStroke")
+        box.Focused:Connect(function() stroke.Color = C.Accent; stroke.Transparency = 0 end)
+        box.FocusLost:Connect(function() stroke.Color = C.Stroke; stroke.Transparency = 0.3 end)
+        return box
+    end
+
+    -- campo com legenda em cima (para valores numéricos)
+    local function labeled(caption, box)
+        local f = mk("Frame", { BackgroundTransparency = 1 })
+        mk("TextLabel", {
+            Parent = f, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14),
+            Font = Enum.Font.Gotham, Text = caption, TextColor3 = C.Dim, TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
+        box.Parent = f
+        box.Position = UDim2.fromOffset(0, 16)
+        box.Size = UDim2.new(1, 0, 0, 30)
+        return f
+    end
+
+    local function pill(parent)
+        return mk("TextLabel", {
+            Parent = parent, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.fromOffset(0, 18), AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundColor3 = C.Dim, BackgroundTransparency = 0.8, BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold, Text = "", TextColor3 = C.Dim, TextSize = 10,
+        }, { corner(9), mk("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }) })
+    end
+    local function setPill(p, text, color)
+        p.Text = text
+        p.TextColor3 = color
+        p.BackgroundColor3 = color
+    end
+
+    local function switch(parent)
+        local s = mk("TextButton", {
+            Parent = parent, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+            Size = UDim2.fromOffset(40, 22), BackgroundColor3 = C.Neutral, BorderSizePixel = 0, AutoButtonColor = false, Text = "",
+        }, { corner(11) })
+        local knob = mk("Frame", {
+            Parent = s, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0),
+            Size = UDim2.fromOffset(16, 16), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0,
+        }, { corner(8) })
+        local function set(on)
+            TweenService:Create(s, FAST, { BackgroundColor3 = on and C.Accent or C.Neutral }):Play()
+            TweenService:Create(knob, FAST, { Position = on and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0) }):Play()
+        end
+        return s, set
+    end
+
+    -- ══════════════ captura de tecla (DETECTAR) ══════════════
+    local activeCapture, capToken = nil, 0
+
+    local function stopCapture()
+        if not activeCapture then return end
+        local ac = activeCapture
+        activeCapture = nil
+        if ac.conn then ac.conn:Disconnect() end
+        ac.reset()
+        -- solta a trava dos atalhos com um pequeno atraso, para a tecla capturada
+        -- não disparar a ação antiga no mesmo frame
+        capToken += 1
+        local t = capToken
+        task.delay(0.15, function()
+            if t == capToken then HyaExt.Capturing = false end
+        end)
+    end
+
+    local function startCapture(btn, onKey)
+        local same = activeCapture and activeCapture.btn == btn
+        stopCapture()
+        if same then return end
+        capToken += 1
+        HyaExt.Capturing = true
+        setBtn(btn, "APERTE…", C.Amber)
+        local ac = { btn = btn, reset = function() setBtn(btn, "DETECTAR", C.Neutral) end }
+        activeCapture = ac
+        ac.conn = UserInputService.InputBegan:Connect(function(input, gp)
+            if gp then return end
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if input.KeyCode == Enum.KeyCode.Unknown then return end
+            if input.KeyCode == Enum.KeyCode.Escape then stopCapture() return end
+            local name = input.KeyCode.Name
+            stopCapture()
+            onKey(name)
+        end)
+    end
+
+    do
+        local main = getSettingsMainFrame()
+        if main then
+            main:GetPropertyChangedSignal("Visible"):Connect(function()
+                if not main.Visible then stopCapture() end
+            end)
+        end
+        ExtrasTab:GetPropertyChangedSignal("Visible"):Connect(function()
+            if not ExtrasTab.Visible then stopCapture() end
+        end)
+    end
+
+    -- linha de atalho: [campo] [DETECTAR] [SALVAR] [LIMPAR]
+    -- DETECTAR/digitar só preenche o campo (borda amarela = ainda não salvo);
+    -- SALVAR aplica; LIMPAR apaga o atalho na hora.
+    local hotkeySyncers = {}
+    local function hotkeyRow(c, id)
+        local row = c.Row(34)
+        local box = field("atalho", HyaExt.GetHotkey(id), true)
+        local det = button("DETECTAR", C.Neutral)
+        local sav = button("SALVAR", C.Accent)
+        local clr = button("LIMPAR", C.Neutral)
+        place(row, { { inst = box }, { inst = det, w = 78 }, { inst = sav, w = 58 }, { inst = clr, w = 54 } })
+
+        local stroke  = box:FindFirstChildOfClass("UIStroke")
+        local pending = false
+
+        local function clean(v) return (tostring(v or ""):gsub("%s", "")) end
+        local function dirty() return clean(box.Text):lower() ~= HyaExt.GetHotkey(id):lower() end
+        local function mark()
+            if box:IsFocused() then return end
+            local d = dirty()
+            stroke.Color = d and C.Amber or C.Stroke
+            stroke.Transparency = d and 0 or 0.3
+        end
+
+        table.insert(hotkeySyncers, function()
+            if not pending and not box:IsFocused() then box.Text = HyaExt.GetHotkey(id) end
+        end)
+
+        box:GetPropertyChangedSignal("Text"):Connect(function()
+            pending = dirty()
+            mark()
+        end)
+
+        local function save()
+            local val = clean(box.Text)
+            if val:lower() ~= HyaExt.GetHotkey(id):lower() then
+                HyaExt.SetHotkey(id, val)
+            end
+            box.Text = HyaExt.GetHotkey(id)   -- se a tecla foi recusada, volta ao valor válido
+            pending = false
+            mark()
+        end
+
+        box.FocusLost:Connect(function(enter)
+            if enter then save() else task.defer(mark) end
+        end)
+        det.MouseButton1Click:Connect(function()
+            startCapture(det, function(name) box.Text = name end)
+        end)
+        sav.MouseButton1Click:Connect(function() stopCapture(); save() end)
+        clr.MouseButton1Click:Connect(function()
+            stopCapture()
+            box.Text = ""
+            if HyaExt.GetHotkey(id) ~= "" then HyaExt.SetHotkey(id, "") end
+            pending = false
+            mark()
+        end)
+    end
+
+    -- ══════════════ SINCRONIZAÇÃO ══════════════
+    section("Sincronização")
+
+    local syncCard = card("Emote Sync", "Nick = sincroniza com esse player. Vazio = player mais próximo (< 40 studs).")
+    local syncPill = pill(syncCard.Header)
+    local syncRow  = syncCard.Row(34)
+    local nickBox  = field("nick (opcional)", "", false)
+    local syncBtn  = button("SYNC", C.Accent)
+    place(syncRow, { { inst = nickBox }, { inst = syncBtn, w = 84 } })
+
+    table.insert(refreshers, function()
+        if HyaExt.SyncHeartbeat then
+            setBtn(syncBtn, "PARAR", C.Red)
+            setPill(syncPill, "SINCRONIZANDO", C.Accent)
+        else
+            setBtn(syncBtn, "SYNC", C.Accent)
+            setPill(syncPill, "INATIVO", C.Dim)
+        end
+    end)
 
     syncBtn.MouseButton1Click:Connect(function()
-        -- se sync ativo, para direto
         if HyaExt.SyncHeartbeat then
-            HyaExt.SyncEmote(nil) -- chama com nil — a função detecta sync ativo e para
-            refreshSyncBtn()
+            HyaExt.SyncEmote(nil)   -- com sync ativo, a função para
+            refreshAll()
             return
         end
 
         local nick = nickBox.Text:gsub("%s", "")
         local target = nil
-
         if nick ~= "" then
             for _, p in ipairs(game.Players:GetPlayers()) do
                 if p ~= game.Players.LocalPlayer and p.Name:lower():find(nick:lower(), 1, true) then
@@ -9882,447 +10299,309 @@ task.spawn(function()
                 end
             end
             if not target then
-                getgenv().Notify({
-                    Title   = "hyaprojmodified | Sync",
-                    Content = "❌ Player '" .. nick .. "' não encontrado no servidor",
-                    Duration = 3
-                })
+                getgenv().Notify({ Title = "hyaprojmodified | Sync", Content = "❌ Player '" .. nick .. "' não encontrado no servidor", Duration = 3 })
                 return
             end
         else
             target = getNearestPlayer(40)
             if not target then
-                getgenv().Notify({
-                    Title   = "hyaprojmodified | Sync",
-                    Content = "❌ Nenhum player próximo encontrado",
-                    Duration = 3
-                })
+                getgenv().Notify({ Title = "hyaprojmodified | Sync", Content = "❌ Nenhum player próximo encontrado", Duration = 3 })
                 return
             end
         end
 
-        getgenv().Notify({
-            Title   = "hyaprojmodified | Sync",
-            Content = "🔍 Sincronizando com " .. target.Name .. "...",
-            Duration = 2
-        })
+        getgenv().Notify({ Title = "hyaprojmodified | Sync", Content = "🔍 Sincronizando com " .. target.Name .. "...", Duration = 2 })
         HyaExt.SyncEmote(target)
-        refreshSyncBtn()
+        refreshAll()
     end)
 
-    -- ── CAM LOCK ──
-    local camItem = SettingsLib.AddItem(ExtrasTab, "Camera Lock", "Trava o ajuste atual (ângulo/distância) e acompanha o boneco")
-    camItem.LayoutOrder = 2
-    local camBtn = SettingsLib:Create("TextButton", {
-        Parent            = camItem,
-        BackgroundColor3  = Color3.fromRGB(60, 130, 220),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "TRAVAR",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+    -- ══════════════ CÂMERA ══════════════
+    section("Câmera")
+
+    -- Camera Lock
+    local lockCard = card("Camera Lock", "Trava o ajuste atual (ângulo/distância) e acompanha o boneco.")
+    local lockPill = pill(lockCard.Header)
+    local lockBtn  = button("TRAVAR", C.Blue)
+    place(lockCard.Row(34), { { inst = lockBtn } })
+    hotkeyRow(lockCard, "CamLock")
 
     table.insert(refreshers, function()
         if HyaExt.CamLocked then
-            camBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-            camBtn.Text = "SOLTAR"
+            setBtn(lockBtn, "SOLTAR", C.Red)
+            setPill(lockPill, "ATIVO", C.Accent)
         else
-            camBtn.BackgroundColor3 = Color3.fromRGB(60, 130, 220)
-            camBtn.Text = "TRAVAR"
+            setBtn(lockBtn, "TRAVAR", C.Blue)
+            setPill(lockPill, "INATIVO", C.Dim)
         end
     end)
-
-    camBtn.MouseButton1Click:Connect(function()
+    lockBtn.MouseButton1Click:Connect(function()
         HyaExt.ToggleCamLock()
-        refreshCamButtons()
+        refreshAll()
     end)
 
-    -- ── CAM HEAD ──
-    local camHeadItem = SettingsLib.AddItem(ExtrasTab, "Cam Head (Smooth)", "Acompanha a cabeça suave (3ª pessoa, mantém seu ângulo)")
-    camHeadItem.LayoutOrder = 3
+    -- Cam Head
+    local headCard = card("Cam Head (Smooth)", "Acompanha a cabeça de forma suave (3ª pessoa, mantém o seu ângulo).")
+    local headPill = pill(headCard.Header)
+    local headBtn  = button("LIGAR", C.Purple)
+    place(headCard.Row(34), { { inst = headBtn } })
 
-    local camHeadBtn = SettingsLib:Create("TextButton", {
-        Parent            = camHeadItem,
-        BackgroundColor3  = Color3.fromRGB(120, 60, 200),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "LIGAR",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-    -- slider de suavidade (Speed 5–20)
-    local speedItem = SettingsLib.AddItem(ExtrasTab, "CamHead Suavidade", "Menor = mais suave | Maior = mais duro (padrão 10)")
-    speedItem.LayoutOrder = 4
-
-    local speedBox = SettingsLib:Create("TextBox", {
-        Parent              = speedItem,
-        BackgroundColor3    = Color3.fromRGB(40, 40, 45),
-        Position            = UDim2.new(1, -90, 0.5, -12),
-        Size                = UDim2.new(0, 80, 0, 24),
-        Font                = Enum.Font.Gotham,
-        Text                = tostring(HyaExt.CamHeadSpeed),
-        TextColor3          = Color3.new(1, 1, 1),
-        TextSize            = 12,
-        ClearTextOnFocus    = false,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+    local speedBox  = field("10", tostring(HyaExt.CamHeadSpeed), true)
+    local heightBox = field("0", tostring(HyaExt.CamHeadYOffset), true)
+    place(headCard.Row(48), {
+        { inst = labeled("Suavidade (menor = mais suave)", speedBox) },
+        { inst = labeled("Altura (0 = padrão)", heightBox) },
+    })
+    hotkeyRow(headCard, "CamHead")
 
     speedBox.FocusLost:Connect(function()
         local v = tonumber(speedBox.Text)
-        if v and v > 0 then
-            HyaExt.CamHeadSpeed = math.clamp(v, 1, 50)
-        end
+        if v and v > 0 then HyaExt.CamHeadSpeed = math.clamp(v, 1, 50) end
         speedBox.Text = tostring(HyaExt.CamHeadSpeed)
     end)
-
-    -- campo de altura do CamHead
-    local heightItem = SettingsLib.AddItem(ExtrasTab, "CamHead Altura", "Ajusta a altura da câmera (0 = padrão, negativo = mais baixo, positivo = mais alto)")
-    heightItem.LayoutOrder = 5
-
-    local heightBox = SettingsLib:Create("TextBox", {
-        Parent              = heightItem,
-        BackgroundColor3    = Color3.fromRGB(40, 40, 45),
-        Position            = UDim2.new(1, -90, 0.5, -12),
-        Size                = UDim2.new(0, 80, 0, 24),
-        Font                = Enum.Font.Gotham,
-        Text                = tostring(HyaExt.CamHeadYOffset),
-        TextColor3          = Color3.new(1, 1, 1),
-        TextSize            = 12,
-        ClearTextOnFocus    = false,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
     heightBox.FocusLost:Connect(function()
         local v = tonumber(heightBox.Text)
         if v ~= nil then
             HyaExt.CamHeadYOffset = v
-            -- reseta o base offset para recalcular com o novo valor imediatamente
-            HyaExt.CamHeadBaseOffset = nil
+            HyaExt.CamHeadBaseOffset = nil   -- recalcula com a nova altura na hora
         end
         heightBox.Text = tostring(HyaExt.CamHeadYOffset)
     end)
 
     table.insert(refreshers, function()
         if HyaExt.CamHeadEnabled then
-            camHeadBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-            camHeadBtn.Text = "DESLIGAR"
+            setBtn(headBtn, "DESLIGAR", C.Red)
+            setPill(headPill, "ATIVO", C.Accent)
         else
-            camHeadBtn.BackgroundColor3 = Color3.fromRGB(120, 60, 200)
-            camHeadBtn.Text = "LIGAR"
+            setBtn(headBtn, "LIGAR", C.Purple)
+            setPill(headPill, "INATIVO", C.Dim)
         end
     end)
-
-    camHeadBtn.MouseButton1Click:Connect(function()
+    headBtn.MouseButton1Click:Connect(function()
         HyaExt.ToggleCamHead()
-        refreshCamButtons()
+        refreshAll()
     end)
 
-    -- ── CAM SAVE (slots) ──
+    -- Girar com o boneco
+    local rotCard = card("Girar com o boneco", "Vale para Camera Lock e Cams salvas. Desligado = só acompanha a posição (melhor para andar). Ligado = fica sempre na mesma face.")
+    local rotSwitch, setRotSwitch = switch(rotCard.Header)
+    setRotSwitch(HyaExt.CamFollowRotate)
+    rotSwitch.MouseButton1Click:Connect(function()
+        HyaExt.SetCamFollowRotate(not HyaExt.CamFollowRotate)
+        setRotSwitch(HyaExt.CamFollowRotate)
+    end)
+
+    -- Cams salvas (cada uma com atalho próprio)
+    section("Cams salvas")
+    note("SALVAR guarda a câmera atual (relativa ao boneco). USAR liga/desliga. LIMPAR apaga a cam salva. O atalho de cada cam liga/desliga direto, sem abrir o menu.")
+
     for i = 1, HyaExt.CamSlotCount do
-        local slotName = tostring(i)
-        local slotItem = SettingsLib.AddItem(
-            ExtrasTab,
-            "Cam Salva " .. slotName,
-            "SALVAR guarda a câmera atual (relativa ao boneco) | USAR liga/desliga"
-        )
-        slotItem.LayoutOrder = 5 + i
-
-        local saveBtn = SettingsLib:Create("TextButton", {
-            Parent            = slotItem,
-            BackgroundColor3  = Color3.fromRGB(0, 160, 110),
-            Position          = UDim2.new(1, -175, 0.5, -12),
-            Size              = UDim2.new(0, 80, 0, 24),
-            Font              = Enum.Font.GothamBold,
-            Text              = "SALVAR",
-            TextColor3        = Color3.new(1, 1, 1),
-            TextSize          = 11,
-        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-        local useBtn = SettingsLib:Create("TextButton", {
-            Parent            = slotItem,
-            BackgroundColor3  = Color3.fromRGB(60, 130, 220),
-            Position          = UDim2.new(1, -90, 0.5, -12),
-            Size              = UDim2.new(0, 80, 0, 24),
-            Font              = Enum.Font.GothamBold,
-            Text              = "USAR",
-            TextColor3        = Color3.new(1, 1, 1),
-            TextSize          = 11,
-        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
+        local slot  = tostring(i)
+        local c     = card("Cam " .. slot)
+        local p     = pill(c.Header)
+        local saveB = button("SALVAR", C.Neutral)
+        local useB  = button("USAR", C.Blue)
+        local delB  = button("LIMPAR", C.Neutral)
+        place(c.Row(34), { { inst = saveB }, { inst = useB }, { inst = delB } })
+        hotkeyRow(c, "Cam" .. slot)
 
         table.insert(refreshers, function()
-            if HyaExt.CamFollowEnabled and HyaExt.CamFollowSlot == slotName then
-                useBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-                useBtn.Text = "SOLTAR"
+            local active = HyaExt.CamFollowEnabled and HyaExt.CamFollowSlot == slot
+            if active then
+                setPill(p, "ATIVA", C.Accent)
+                setBtn(useB, "SOLTAR", C.Red)
+            elseif HyaExt.CamSlots[slot] ~= nil then
+                setPill(p, "SALVA", C.Blue)
+                setBtn(useB, "USAR", C.Blue)
             else
-                useBtn.BackgroundColor3 = Color3.fromRGB(60, 130, 220)
-                useBtn.Text = "USAR"
+                setPill(p, "VAZIA", C.Dim)
+                setBtn(useB, "USAR", C.Neutral)
             end
         end)
 
-        saveBtn.MouseButton1Click:Connect(function()
-            HyaExt.SaveCamSlot(slotName)
+        saveB.MouseButton1Click:Connect(function()
+            HyaExt.SaveCamSlot(slot)
+            refreshAll()
         end)
-        useBtn.MouseButton1Click:Connect(function()
-            HyaExt.ToggleCamSlot(slotName)
-            refreshCamButtons()
+        useB.MouseButton1Click:Connect(function()
+            HyaExt.ToggleCamSlot(slot)
+            refreshAll()
+        end)
+        delB.MouseButton1Click:Connect(function()
+            HyaExt.ClearCamSlot(slot)
+            refreshAll()
         end)
     end
 
-    -- modo de acompanhamento
-    local rotItem = SettingsLib.AddItem(ExtrasTab, "Lock/Cam Salva: girar com o boneco", "OFF = só acompanha a posição (melhor para andar) | ON = sempre na mesma face")
-    rotItem.LayoutOrder = 9
-    local rotBtn = SettingsLib:Create("TextButton", {
-        Parent            = rotItem,
-        BackgroundColor3  = Color3.fromRGB(80, 80, 80),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "OFF",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-    local function updateRotBtn()
-        rotBtn.Text = HyaExt.CamFollowRotate and "ON" or "OFF"
-        rotBtn.BackgroundColor3 = HyaExt.CamFollowRotate and Color3.fromRGB(0, 160, 110) or Color3.fromRGB(80, 80, 80)
-    end
-    updateRotBtn()
-    rotBtn.MouseButton1Click:Connect(function()
-        HyaExt.SetCamFollowRotate(not HyaExt.CamFollowRotate)
-        updateRotBtn()
+    -- ══════════════ KEYBINDS DE EMOTE ══════════════
+    section("Keybinds de emote")
+
+    local kbCard = card("Nova keybind", "Escolha a tecla e o ID do emote e clique SALVAR. LIMPAR esvazia os campos. SALVAR com o ID vazio remove a keybind dessa tecla.")
+    local kbPill = pill(kbCard.Header)
+
+    local kbKeyBox = field("tecla (ex: F, One, LeftAlt)", "", true)
+    local kbDet    = button("DETECTAR", C.Neutral)
+    place(kbCard.Row(34), { { inst = kbKeyBox }, { inst = kbDet, w = 92 } })
+
+    local kbIdBox  = field("Emote ID", "", false)
+    local kbGet    = button("PEGAR", C.Blue)
+    local kbSave   = button("SALVAR", C.Accent)
+    local kbClear  = button("LIMPAR", C.Neutral)
+    place(kbCard.Row(34), { { inst = kbIdBox }, { inst = kbGet, w = 56 }, { inst = kbSave, w = 60 }, { inst = kbClear, w = 54 } })
+    kbClear.MouseButton1Click:Connect(function()
+        stopCapture()
+        kbKeyBox.Text = ""
+        kbIdBox.Text  = ""
     end)
 
-    refreshCamButtons()
-
-    -- ajusta LayoutOrder dos keybinds para ficar depois
-    -- ── KEYBINDS ──
-    local kbTitleItem = SettingsLib.AddItem(ExtrasTab, "Keybinds de Emote", "Pressione uma tecla para tocar o emote configurado")
-    kbTitleItem.LayoutOrder = 11
-
-    local kbListBtn = SettingsLib:Create("TextButton", {
-        Parent            = kbTitleItem,
-        BackgroundColor3  = Color3.fromRGB(80, 80, 80),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "VER",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-    kbListBtn.MouseButton1Click:Connect(HyaExt.ListKeybinds)
-
-    -- ── LINHA 1: Tecla ──
-    local kbKeyItem = SettingsLib.AddItem(ExtrasTab, "Keybind › Tecla", "Clique DETECTAR e aperte a tecla, ou digite o nome (ex: F, One, LeftAlt)")
-    kbKeyItem.LayoutOrder = 12
-
-    local detectConn = nil
-    local keyBox = SettingsLib:Create("TextBox", {
-        Parent              = kbKeyItem,
-        BackgroundColor3    = Color3.fromRGB(40, 40, 45),
-        Position            = UDim2.new(1, -185, 0.5, -12),
-        Size                = UDim2.new(0, 90, 0, 24),
-        Font                = Enum.Font.Gotham,
-        Text                = "",
-        PlaceholderText     = "tecla",
-        TextColor3          = Color3.new(1, 1, 1),
-        TextSize            = 11,
-        ClearTextOnFocus    = false,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-    local detectBtn = SettingsLib:Create("TextButton", {
-        Parent            = kbKeyItem,
-        BackgroundColor3  = Color3.fromRGB(80, 80, 80),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "DETECTAR",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 10,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-    detectBtn.MouseButton1Click:Connect(function()
-        if detectConn then
-            detectConn:Disconnect()
-            detectConn = nil
-            detectBtn.Text = "DETECTAR"
-            detectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-            return
-        end
-        detectBtn.Text = "APERTE..."
-        detectBtn.BackgroundColor3 = Color3.fromRGB(200, 130, 0)
-        detectConn = UserInputService.InputBegan:Connect(function(input, gp)
-            if gp then return end
-            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-            if input.KeyCode == Enum.KeyCode.Unknown or input.KeyCode == Enum.KeyCode.Escape then return end
-            keyBox.Text = input.KeyCode.Name
-            detectConn:Disconnect()
-            detectConn = nil
-            detectBtn.Text = "DETECTAR"
-            detectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-        end)
+    kbDet.MouseButton1Click:Connect(function()
+        startCapture(kbDet, function(name) kbKeyBox.Text = name end)
     end)
 
-    -- ── LINHA 2: Emote ID + PEGAR + SALVAR ──
-    local kbIdItem = SettingsLib.AddItem(ExtrasTab, "Keybind › Emote ID", "Cole o ID (deixe vazio para remover a keybind) — PEGAR copia o emote atual")
-    kbIdItem.LayoutOrder = 13
-
-    local idBox = SettingsLib:Create("TextBox", {
-        Parent              = kbIdItem,
-        BackgroundColor3    = Color3.fromRGB(40, 40, 45),
-        Position            = UDim2.new(1, -285, 0.5, -12),
-        Size                = UDim2.new(0, 100, 0, 24),
-        Font                = Enum.Font.Gotham,
-        Text                = "",
-        PlaceholderText     = "Emote ID",
-        TextColor3          = Color3.new(1, 1, 1),
-        TextSize            = 11,
-        ClearTextOnFocus    = false,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-    local getBtn = SettingsLib:Create("TextButton", {
-        Parent            = kbIdItem,
-        BackgroundColor3  = Color3.fromRGB(60, 130, 220),
-        Position          = UDim2.new(1, -180, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "PEGAR",
-        TextColor3        = Color3.new(1, 1, 1),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-    local kbAddBtn = SettingsLib:Create("TextButton", {
-        Parent            = kbIdItem,
-        BackgroundColor3  = Color3.fromRGB(0, 200, 100),
-        Position          = UDim2.new(1, -90, 0.5, -12),
-        Size              = UDim2.new(0, 80, 0, 24),
-        Font              = Enum.Font.GothamBold,
-        Text              = "SALVAR",
-        TextColor3        = Color3.fromRGB(20, 20, 20),
-        TextSize          = 11,
-    }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-    getBtn.MouseButton1Click:Connect(function()
+    kbGet.MouseButton1Click:Connect(function()
         local id = getPlayingEmoteId(game.Players.LocalPlayer)
         if not id then
-            getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ Nenhum emote tocando agora", Duration=3})
+            getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "❌ Nenhum emote tocando agora", Duration = 3 })
             return
         end
-        idBox.Text = tostring(id)
+        kbIdBox.Text = tostring(id)
         pcall(function() setclipboard(tostring(id)) end)
-        getgenv().Notify({Title="hyaprojmodified | Keybind", Content="📋 ID " .. tostring(id) .. " copiado e no campo", Duration=3})
+        getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "📋 ID " .. tostring(id) .. " copiado e no campo", Duration = 3 })
     end)
 
-    kbAddBtn.MouseButton1Click:Connect(function()
-        if detectConn then
-            detectConn:Disconnect()
-            detectConn = nil
-            detectBtn.Text = "DETECTAR"
-            detectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-        end
-        local key = keyBox.Text:upper():gsub("%s", "")
-        local id  = idBox.Text:gsub("%s", "")
+    kbSave.MouseButton1Click:Connect(function()
+        stopCapture()
+        local key = (kbKeyBox.Text:gsub("%s", ""))
+        local id  = (kbIdBox.Text:gsub("%s", ""))
         if key == "" then
-            getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ Digite ou detecte uma tecla", Duration=3})
+            getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "❌ Digite ou detecte uma tecla", Duration = 3 })
             return
         end
-        if id == "" then
-            HyaExt.SetKeybind(key, nil)
+        if id ~= "" and not tonumber(id) then
+            getgenv().Notify({ Title = "hyaprojmodified | Keybind", Content = "❌ ID inválido, use só números", Duration = 3 })
+            return
+        end
+        if HyaExt.SetKeybind(key, id ~= "" and id or nil) then
+            kbKeyBox.Text = ""
+            kbIdBox.Text  = ""
+        end
+    end)
+
+    -- lista das keybinds salvas (clique para editar, ✕ para remover)
+    local listCard = card("Keybinds salvas")
+    local listPill = pill(listCard.Header)
+    local listHost = mk("Frame", {
+        Parent = listCard.Frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 20,
+    }, { mk("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }) })
+    local emptyLabel = mk("TextLabel", {
+        Parent = listCard.Frame, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18), LayoutOrder = 21,
+        Font = Enum.Font.Gotham, Text = "Nenhuma keybind ainda.", TextColor3 = C.Dim, TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    })
+
+    local function renderKeybindList()
+        for _, ch in ipairs(listHost:GetChildren()) do
+            if ch:IsA("Frame") then ch:Destroy() end
+        end
+        local keys = {}
+        for k in pairs(HyaExt.Keybinds) do table.insert(keys, k) end
+        table.sort(keys)
+
+        emptyLabel.Visible = (#keys == 0)
+        if #keys == 0 then
+            setPill(listPill, "0", C.Dim)
         else
-            if not tonumber(id) then
-                getgenv().Notify({Title="hyaprojmodified | Keybind", Content="❌ ID inválido, use só números", Duration=3})
+            setPill(listPill, tostring(#keys), C.Accent)
+        end
+
+        for idx, k in ipairs(keys) do
+            local emoteId = tostring(HyaExt.Keybinds[k])
+            local item = mk("Frame", {
+                Parent = listHost, BackgroundColor3 = C.Field, BorderSizePixel = 0,
+                Size = UDim2.new(1, 0, 0, 30), LayoutOrder = idx,
+            }, { corner(8) })
+            local pick = mk("TextButton", {
+                Parent = item, BackgroundTransparency = 1, AutoButtonColor = false,
+                Size = UDim2.new(1, -34, 1, 0), Position = UDim2.fromOffset(0, 0),
+                Font = Enum.Font.GothamMedium, RichText = true, TextSize = 12, TextColor3 = C.Text,
+                Text = string.format('<font color="%s"><b>%s</b></font>   →   %s', hex(C.Accent), k, emoteId),
+                TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+            }, { mk("UIPadding", { PaddingLeft = UDim.new(0, 10) }) })
+            local del = mk("TextButton", {
+                Parent = item, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -4, 0.5, 0),
+                Size = UDim2.fromOffset(24, 22), BackgroundColor3 = C.Neutral, BorderSizePixel = 0, AutoButtonColor = false,
+                Font = Enum.Font.GothamBold, Text = "×", TextColor3 = C.Text, TextSize = 16,
+            }, { corner(6) })
+            pick.MouseButton1Click:Connect(function()
+                kbKeyBox.Text = k
+                kbIdBox.Text  = emoteId
+            end)
+            del.MouseButton1Click:Connect(function()
+                HyaExt.SetKeybind(k, nil)
+            end)
+        end
+    end
+    HyaExt.OnKeybindsChanged = renderKeybindList
+    renderKeybindList()
+
+    -- ══════════════ GERAL ══════════════
+    section("Geral")
+    local guiCard = card("Abrir / fechar configurações", "Atalho para mostrar e esconder este menu (padrão: ').")
+    hotkeyRow(guiCard, "OpenGui")
+
+    -- ══════════════ LIMPEZA ══════════════
+    section("Limpeza")
+    local wipeCard = card("Limpar tudo", "Cada botão pede confirmação: clique duas vezes. \"Abrir GUI\" não é apagado.")
+
+    local function confirmButton(text, action)
+        local b = button(text, C.Neutral)
+        local armed = false
+        b.MouseButton1Click:Connect(function()
+            if not armed then
+                armed = true
+                setBtn(b, "CONFIRMAR?", C.Red)
+                task.delay(3, function()
+                    if armed then armed = false; setBtn(b, text, C.Neutral) end
+                end)
                 return
             end
-            HyaExt.SetKeybind(key, id)
-        end
-        keyBox.Text = ""
-        idBox.Text  = ""
-    end)
-
-    -- ── HOTKEYS DE CÂMERA ──
-    -- helper: cria linha de hotkey usando AddItemTwoRow
-    -- TopRow (40px) recebe campo+botões perfeitamente centrados; descrição fica abaixo
-    local function makeCamHotkeyRow(order, label, desc, getCurrent, setCurrent)
-        local topRow, container = SettingsLib.AddItemTwoRow(ExtrasTab, label, desc)
-        container.LayoutOrder = order
-
-        -- campo de tecla — ocupa a faixa direita do TopRow
-        local camKeyBox = SettingsLib:Create("TextBox", {
-            Parent              = topRow,
-            BackgroundColor3    = Color3.fromRGB(45, 45, 50),
-            Position            = UDim2.new(1, -276, 0.5, -13),
-            Size                = UDim2.new(0, 72, 0, 26),
-            Font                = Enum.Font.Gotham,
-            Text                = getCurrent(),
-            PlaceholderText     = "tecla",
-            TextColor3          = Color3.new(1, 1, 1),
-            TextSize            = 11,
-            ClearTextOnFocus    = false,
-        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-        local camDetConn = nil
-
-        local camDetBtn = SettingsLib:Create("TextButton", {
-            Parent            = topRow,
-            BackgroundColor3  = Color3.fromRGB(75, 75, 80),
-            Position          = UDim2.new(1, -198, 0.5, -13),
-            Size              = UDim2.new(0, 86, 0, 26),
-            Font              = Enum.Font.GothamBold,
-            Text              = "DETECTAR",
-            TextColor3        = Color3.new(1, 1, 1),
-            TextSize          = 10,
-        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-        local camSaveBtn = SettingsLib:Create("TextButton", {
-            Parent            = topRow,
-            BackgroundColor3  = Color3.fromRGB(0, 160, 100),
-            Position          = UDim2.new(1, -104, 0.5, -13),
-            Size              = UDim2.new(0, 92, 0, 26),
-            Font              = Enum.Font.GothamBold,
-            Text              = "SALVAR",
-            TextColor3        = Color3.fromRGB(20, 20, 20),
-            TextSize          = 11,
-        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
-
-        local function stopDet()
-            if camDetConn then camDetConn:Disconnect() camDetConn = nil end
-            camDetBtn.Text = "DETECTAR"
-            camDetBtn.BackgroundColor3 = Color3.fromRGB(75, 75, 80)
-        end
-
-        camDetBtn.MouseButton1Click:Connect(function()
-            if camDetConn then stopDet() return end
-            camDetBtn.Text = "APERTE..."
-            camDetBtn.BackgroundColor3 = Color3.fromRGB(200, 130, 0)
-            camDetConn = UserInputService.InputBegan:Connect(function(input, gp)
-                if gp then return end
-                if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-                if input.KeyCode == Enum.KeyCode.Unknown or input.KeyCode == Enum.KeyCode.Escape then stopDet() return end
-                camKeyBox.Text = input.KeyCode.Name
-                stopDet()
-            end)
+            armed = false
+            setBtn(b, text, C.Neutral)
+            action()
+            refreshAll()
         end)
-
-        camSaveBtn.MouseButton1Click:Connect(function()
-            stopDet()
-            local val = camKeyBox.Text:gsub("%s", "")
-            setCurrent(val)
-            rebuildHotkeyConnections()
-            hyaSave()
-            getgenv().Notify({Title="hyaprojmodified | Hotkey", Content="⌨️ " .. label .. " → " .. (val ~= "" and "["..val.."]" or "(nenhuma)"), Duration=2})
-        end)
+        return b
     end
 
-    local camHkTitle = SettingsLib.AddItem(ExtrasTab, "Hotkeys de Câmera", "Atalhos para CamLock, CamHead e abrir GUI")
-    camHkTitle.LayoutOrder = 14
+    place(wipeCard.Row(34), {
+        { inst = confirmButton("ATALHOS DE CÂMERA", function() HyaExt.ClearAllHotkeys() end) },
+        { inst = confirmButton("KEYBINDS DE EMOTE", function() HyaExt.ClearAllKeybinds() end) },
+    })
+    place(wipeCard.Row(34), {
+        { inst = confirmButton("CAMS SALVAS", function() HyaExt.ClearAllCamSlots() end) },
+        { inst = confirmButton("TUDO", function()
+            HyaExt.ClearAllHotkeys()
+            HyaExt.ClearAllKeybinds()
+            HyaExt.ClearAllCamSlots()
+        end) },
+    })
 
-    makeCamHotkeyRow(15, "CamLock",   "Toggle CamLock",            function() return HyaExt.HotkeyCamLock  end, function(v) HyaExt.HotkeyCamLock  = v end)
-    makeCamHotkeyRow(16, "CamHead",   "Toggle CamHead",            function() return HyaExt.HotkeyCamHead  end, function(v) HyaExt.HotkeyCamHead  = v end)
-    makeCamHotkeyRow(17, "Abrir GUI", "Abre/fecha configs (padrão: ')", function() return HyaExt.HotkeyOpenGui end, function(v) HyaExt.HotkeyOpenGui = v end)
-
-    -- ativa os hotkeys agora que a GUI está pronta
+    -- ══════════════ ativação ══════════════
+    refreshAll()
     _HotkeyGuiRef = getSettingsMainFrame()
     rebuildHotkeyConnections()
+
+    -- mantém os botões em dia mesmo quando o estado muda por atalho, respawn ou outro modo
+    task.spawn(function()
+        local main = _HotkeyGuiRef
+        while main and main.Parent do
+            if main.Visible and ExtrasTab.Visible then
+                refreshAll()
+                for _, f in ipairs(hotkeySyncers) do pcall(f) end
+            end
+            task.wait(0.4)
+        end
+    end)
 end)
 
 -- expõe globalmente para quem quiser chamar via console
