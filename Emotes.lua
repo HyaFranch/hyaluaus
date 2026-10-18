@@ -10240,18 +10240,51 @@ task.spawn(function()
     end)
 
     -- ── HOTKEYS DE CÂMERA ──
-    -- helper local para criar uma linha de hotkey (label + campo + DETECTAR + SALVAR)
+    -- helper: cria um item com layout próprio — linha única: [Título] [campo] [DETECTAR] [SALVAR]
+    -- sem descrição no AddItem para evitar sobreposição; descrição vai embaixo do título
     local function makeCamHotkeyRow(order, label, desc, getCurrent, setCurrent)
-        local item = SettingsLib.AddItem(ExtrasTab, label, desc)
-        item.LayoutOrder = order
+        -- cria o container manualmente para controle total do layout
+        local item = SettingsLib:Create("Frame", {
+            Parent            = ExtrasTab,
+            BackgroundColor3  = Color3.fromRGB(30, 30, 35),
+            Size              = UDim2.new(0.95, 0, 0, 56),
+            LayoutOrder       = order,
+        }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 10)}) })
 
-        local camDetConn = nil
+        -- título (esquerda, topo)
+        SettingsLib:Create("TextLabel", {
+            Parent               = item,
+            BackgroundTransparency = 1,
+            Position             = UDim2.new(0, 12, 0, 8),
+            Size                 = UDim2.new(0.45, 0, 0, 18),
+            Font                 = Enum.Font.GothamBold,
+            Text                 = label,
+            TextColor3           = Color3.new(1, 1, 1),
+            TextSize             = 12,
+            TextXAlignment       = Enum.TextXAlignment.Left,
+            TextTruncate         = Enum.TextTruncate.AtEnd,
+        })
 
+        -- descrição (esquerda, baixo)
+        SettingsLib:Create("TextLabel", {
+            Parent               = item,
+            BackgroundTransparency = 1,
+            Position             = UDim2.new(0, 12, 0, 30),
+            Size                 = UDim2.new(0.45, 0, 0, 16),
+            Font                 = Enum.Font.Gotham,
+            Text                 = desc,
+            TextColor3           = Color3.fromRGB(140, 140, 140),
+            TextSize             = 10,
+            TextXAlignment       = Enum.TextXAlignment.Left,
+            TextTruncate         = Enum.TextTruncate.AtEnd,
+        })
+
+        -- campo de texto (direita, centralizado verticalmente)
         local camKeyBox = SettingsLib:Create("TextBox", {
             Parent              = item,
-            BackgroundColor3    = Color3.fromRGB(40, 40, 45),
-            Position            = UDim2.new(1, -285, 0.5, -12),
-            Size                = UDim2.new(0, 90, 0, 24),
+            BackgroundColor3    = Color3.fromRGB(45, 45, 50),
+            Position            = UDim2.new(1, -276, 0.5, -13),
+            Size                = UDim2.new(0, 72, 0, 26),
             Font                = Enum.Font.Gotham,
             Text                = getCurrent(),
             PlaceholderText     = "tecla",
@@ -10260,22 +10293,26 @@ task.spawn(function()
             ClearTextOnFocus    = false,
         }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
+        local camDetConn = nil
+
+        -- botão DETECTAR
         local camDetBtn = SettingsLib:Create("TextButton", {
             Parent            = item,
-            BackgroundColor3  = Color3.fromRGB(80, 80, 80),
-            Position          = UDim2.new(1, -190, 0.5, -12),
-            Size              = UDim2.new(0, 90, 0, 24),
+            BackgroundColor3  = Color3.fromRGB(75, 75, 80),
+            Position          = UDim2.new(1, -198, 0.5, -13),
+            Size              = UDim2.new(0, 86, 0, 26),
             Font              = Enum.Font.GothamBold,
             Text              = "DETECTAR",
             TextColor3        = Color3.new(1, 1, 1),
             TextSize          = 10,
         }, { SettingsLib:Create("UICorner", {CornerRadius = UDim.new(0, 6)}) })
 
+        -- botão SALVAR
         local camSaveBtn = SettingsLib:Create("TextButton", {
             Parent            = item,
             BackgroundColor3  = Color3.fromRGB(0, 160, 100),
-            Position          = UDim2.new(1, -90, 0.5, -12),
-            Size              = UDim2.new(0, 80, 0, 24),
+            Position          = UDim2.new(1, -104, 0.5, -13),
+            Size              = UDim2.new(0, 92, 0, 26),
             Font              = Enum.Font.GothamBold,
             Text              = "SALVAR",
             TextColor3        = Color3.fromRGB(20, 20, 20),
@@ -10286,9 +10323,9 @@ task.spawn(function()
             if camDetConn then
                 camDetConn:Disconnect()
                 camDetConn = nil
-                camDetBtn.Text = "DETECTAR"
-                camDetBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
             end
+            camDetBtn.Text = "DETECTAR"
+            camDetBtn.BackgroundColor3 = Color3.fromRGB(75, 75, 80)
         end
 
         camDetBtn.MouseButton1Click:Connect(function()
@@ -10317,13 +10354,13 @@ task.spawn(function()
         end)
     end
 
-    -- Separador visual
-    local camHkTitle = SettingsLib.AddItem(ExtrasTab, "Hotkeys de Câmera", "Teclas de atalho para CamLock e CamHead (deixe vazio para desativar)")
+    -- separador
+    local camHkTitle = SettingsLib.AddItem(ExtrasTab, "Hotkeys de Câmera", "Teclas de atalho para CamLock e CamHead")
     camHkTitle.LayoutOrder = 14
 
-    makeCamHotkeyRow(15, "Hotkey › CamLock",  "Toggle do CamLock",         function() return HyaExt.HotkeyCamLock end,  function(v) HyaExt.HotkeyCamLock  = v end)
-    makeCamHotkeyRow(16, "Hotkey › CamHead",  "Toggle do CamHead",         function() return HyaExt.HotkeyCamHead end,  function(v) HyaExt.HotkeyCamHead  = v end)
-    makeCamHotkeyRow(17, "Hotkey › Abrir GUI","Abre/fecha a janela de configs (padrão: ')", function() return HyaExt.HotkeyOpenGui end, function(v) HyaExt.HotkeyOpenGui = v end)
+    makeCamHotkeyRow(15, "CamLock",   "Toggle do CamLock",          function() return HyaExt.HotkeyCamLock  end, function(v) HyaExt.HotkeyCamLock  = v end)
+    makeCamHotkeyRow(16, "CamHead",   "Toggle do CamHead",          function() return HyaExt.HotkeyCamHead  end, function(v) HyaExt.HotkeyCamHead  = v end)
+    makeCamHotkeyRow(17, "Abrir GUI", "Abre/fecha configs (padrão: ')", function() return HyaExt.HotkeyOpenGui end, function(v) HyaExt.HotkeyOpenGui = v end)
 
     -- ativa os hotkeys agora que a GUI está pronta
     _HotkeyGuiRef = getSettingsMainFrame()
